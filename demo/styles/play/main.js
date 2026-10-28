@@ -437,7 +437,10 @@ async function main() {
       pinching = true; drag = null; follow = null; camera.grabEnd();
     }
   });
+  // the pointer's place goes to the renderer in every frame, which answers with the exact ground drawn under it (live.js planetUnder, surfaceY): a pick and a held zoom start from it
+  canvas.addEventListener("pointerleave", () => live.setCursor(null, null));
   canvas.addEventListener("pointermove", (e) => {
+    live.setCursor(e.clientX, e.clientY);
     if (orbit) { camera.orbitBy((orbit.x - e.clientX) / 180); orbit.x = e.clientX; return; }
     const p = pointers.get(e.pointerId);
     if (!p) return;
@@ -492,6 +495,7 @@ async function main() {
   }
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
+    live.setCursor(e.clientX, e.clientY);
     camera.zoomTo(camera.goal - clamp(e.deltaY, -200, 200) * 0.004, follow ? null : e.clientX, follow ? null : e.clientY);
   }, { passive: false });
   // what the keys do, and the touch buttons with them

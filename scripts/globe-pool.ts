@@ -1,4 +1,4 @@
-// The coarse tier's terrain and climate pooled from the finest tier's stage files (src/gpu/globe/pool.ts), in calls of at most --budget seconds into /tmp/planet-75m/<seed>-<planet key>/: run it again
+// The coarse tier's terrain and climate pooled from the finest tier's stage files (src/gpu/globe/pool.ts), in calls of at most --budget seconds into the bake directory (bakedir.ts BAKE, default ~/.cache/nomads-bakes), in <seed>-<planet key>/: run it again
 // until it says done. CPU only (no GPU lock). The terrain and air stages of the finest tier come first.
 //   bun scripts/globe-pool.ts --seed 1 --key <planet key> [--from 5] [--to 3] [--budget 240]
 import { bakeDir } from "../src/gpu/globe/bakedir";

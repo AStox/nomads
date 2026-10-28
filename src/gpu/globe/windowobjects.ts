@@ -6,7 +6,7 @@ import { cover, dispatch, pipeline, readback, storage, uniform } from "../kernel
 import { objectsGpu, objectsWrite, type CellWindow } from "../terrain/scenery";
 import { CELLS, STAGE_WORDS, placeKernel, scanKernelFor, scatterKernel } from "../wgsl/terrain-place";
 import type { Gpu } from "../device";
-import { keyOf, tileFields, type TileSource } from "./scatter";
+import { WINDOW_HALO, keyOf, tileFields, type TileSource } from "./scatter";
 
 // A tile of the window: its scatter's rectangle of cells, and where its objects stand in the window's frame, in units of 15 mm: out x = d0 (A0 + px - s0x) + d1 (A1 + py - s0y) + w0x,
 // out y = N - (-d1 (A0 + px - s0x) + d0 (A1 + py - s0y) + w0y), (px, py) the entry's place in the tile's game tiles of 10,000 units.
@@ -17,7 +17,7 @@ export async function windowObjects(g: Gpu, tier: number, tiles: PlaceTile[], se
   const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], side = o.side ?? 256, win = side * 5000;
   // what the draws count, tile by tile, kept on the GPU for the writes
   const held = await Promise.all(tiles.map(async (t) => {
-    const f = await tileFields(ctx, t.tile, t.source);
+    const f = await tileFields(ctx, t.tile, t.source, WINDOW_HALO, true);
     const run = await objectsGpu(g, f.L, f.K, f.packed, f.field, seed, keyOf(t.tile), t.rect, false);
     // the entries of the game tiles the rectangle covers: the window's entries and a margin of at most a game tile round them
     let est = 0;
@@ -87,7 +87,7 @@ const frameOf = (tile: PlaceTile, b: BlockSpec) => b.turn
 // north-west corner; `tile.a0`, `a1` the tile's corner in units, which the blocks' frames hang from), so the tile's tables and counts are made once however many blocks there are. The same
 // entries as the window's, thinned by the same hash: a block at share 2^-k holds exactly those of the window's at 2^-k that lie in it. `close` lets the run go.
 export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: number, o: { caps: number[] }) {
-  const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], f = await tileFields(ctx, tile.tile, tile.source);
+  const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], f = await tileFields(ctx, tile.tile, tile.source, WINDOW_HALO, true);
   const run = await objectsGpu(g, f.L, f.K, f.packed, f.field, seed, keyOf(tile.tile), tile.rect, false);
   await objectsWrite(g, f.L, f.K, f.packed, f.field, run);
   const span = run.to - run.from;

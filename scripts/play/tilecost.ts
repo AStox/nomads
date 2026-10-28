@@ -3,6 +3,8 @@
 // The tile that holds (lat, lon) of the planet's finest tier, from its ground tile file; the scatter of the whole tile and of 1/16 of it, the fine ground of
 // the tile as a window, first call (pipelines compile) and warm. One GPU job, a few seconds.
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { BAKE } from "../../src/gpu/globe/bakedir";
 import { holdGpu, exit } from "../seeded";
 import { theGpu } from "../../src/gpu/device";
 import { fromLatLon, locateVec, tierGrid } from "../../src/gpu/globe/grid";
@@ -16,7 +18,7 @@ const nums = args.filter((a) => /^-?\d/.test(a)).map(Number), lat = nums[0] ?? 4
 await holdGpu();
 const gpu = await theGpu(), g = tierGrid(TIER), loc = locateVec(g, fromLatLon((lat * Math.PI) / 180, (lon * Math.PI) / 180)), nT = 2 ** TIER;
 const tx = Math.floor(loc.X / 256), ty = Math.floor(loc.Y / 256), tile = loc.face * nT * nT + ty * nT + tx;
-const t0 = performance.now(), gt = readGroundTile(readFileSync(`/tmp/planet-75m/1-${key}/groundtiles/f${loc.face}/${ty}-${tx}.gt.gz`));
+const t0 = performance.now(), gt = readGroundTile(readFileSync(join(BAKE, `1-${key}`, "groundtiles", `f${loc.face}`, `${ty}-${tx}.gt.gz`)));
 console.log(`tile ${tile} (face ${loc.face} ${tx},${ty}) read and inflated in ${(performance.now() - t0).toFixed(0)} ms, ${gt.meta.fields.length} planes`);
 const ctx = { gpu, dir: null as never, tier: TIER }, ms = (t: number) => `${(performance.now() - t).toFixed(0)} ms`;
 

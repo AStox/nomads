@@ -56,7 +56,7 @@ const INIT = () => {
 export interface Run { browser: any; page: any; pid: number; errs: string[]; cons: [number, string][]; close: () => Promise<void>; t0: number }
 
 export async function launch(opts: { vw?: number; vh?: number; dpr?: number; profile?: string; keepProfile?: boolean } = {}): Promise<Run> {
-  const vw = opts.vw ?? 1600, vh = opts.vh ?? 1000, dpr = opts.dpr ?? 1, profile = opts.profile ?? "/tmp/globe-fix-lead2/chrome";
+  const vw = opts.vw ?? 1600, vh = opts.vh ?? 1000, dpr = opts.dpr ?? 1, profile = opts.profile ?? process.env.PROFILE ?? "/tmp/globe-fix-lead2/chrome";
   if (!opts.keepProfile) rmSync(profile, { recursive: true, force: true });
   mkdirSync(profile, { recursive: true });
   const browser = await puppeteer.launch({

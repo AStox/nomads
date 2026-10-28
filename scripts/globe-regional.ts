@@ -1,4 +1,4 @@
-// A seed's finer global tier (src/gpu/globe/regional.ts) of the small planet built by stages into the planet's store (/tmp/planet-small/store): each call runs at most
+// A seed's finer global tier (src/gpu/globe/regional.ts) of the small planet built by stages into the planet's store (the bake directory (bakedir.ts BAKE, default ~/.cache/nomads-bakes), small/store): each call runs at most
 // BUDGET_S seconds of steps and keeps where it got to, so run it again until it says baked. The tier is the coarse-to-fine global solve the 75 m tier will use; this
 // command makes any tier from 1 to 3 (a state of tier 3 is 100 MB; tier 4's is 400 MB and is measured, not kept: docs/research/globe/2026-10-20-small-planet-impl.md).
 //   bun scripts/globe-regional.ts --seed 1 --tier 2 --steps 40

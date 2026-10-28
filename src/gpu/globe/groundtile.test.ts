@@ -6,7 +6,7 @@ import { closeSync, existsSync, ftruncateSync, openSync, readFileSync, rmSync, w
 import { join } from "node:path";
 import { releaseGpu } from "../device";
 import { GROUNDTILE_FIELDS, GROUNDTILE_HALO, groundTilePath } from "./bake";
-import { BakeDir, tierFile } from "./bakedir";
+import { BAKE, BakeDir, tierFile } from "./bakedir";
 import { KEY, REAL, TIER, scratchBake } from "./ground-staged";
 import { mappedField } from "./ground";
 import { buildGroundTiles, groundTileBytes, makeGroundTile, readGroundTile, tileSource } from "./groundtile";
@@ -69,7 +69,7 @@ describe("the ground tile of the real planet's tile 458", () => {
 
 // CPU only: tier 5 on a sparse store (the fields hold the cell's own id, so a plane says which cell of the planet each halo cell is) and tier 4 on the real bake.
 describe("the ground tile at any tier", () => {
-  const SCRATCH = "/tmp/planet-75m/pyramidtiles-scratch";
+  const SCRATCH = join(BAKE, "pyramidtiles-scratch");
   test("tier 5's halos across a face's edge and a cube's corner are patch.ts's cells", () => {
     const T5 = 5, g = tierGrid(T5), fn = g.fn, cells = 6 * fn * fn, tiles = [0, 15, 31, 992, 1023, 1024, 1500], root = join(SCRATCH, "gt5");
     rmSync(root, { recursive: true, force: true });
@@ -117,9 +117,9 @@ describe("the ground tile at any tier", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 120_000);
 
-  const real = existsSync("/tmp/planet-75m/1-883a8d9387df/t4-height.i32") ? test : test.skip;
+  const real = existsSync(join(BAKE, "1-883a8d9387df", "t4-height.i32")) ? test : test.skip;
   real("tier 4 on the real bake is the file the tier-4-only code wrote", () => {
-    const dir = new BakeDir("/tmp/planet-75m/1-883a8d9387df");
+    const dir = new BakeDir(join(BAKE, "1-883a8d9387df"));
     for (const k of [0, 458, 1535]) {
       const { face, tx, ty } = tileAt(4, k), path = groundTilePath(dir.dir, face, tx, ty);
       if (!existsSync(path)) continue;

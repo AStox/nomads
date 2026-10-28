@@ -1,9 +1,9 @@
 // The fine tiers' erosion law on a test region (src/gpu/globe/land.ts): a square block of the 75 m planet (tier 5) or of the 150 m tier above it, of `--tiles` tier-5 tiles a side from tile
-// (--tx, --ty) of a face, started from tier 3's heights carried down (the chain's own carry; tier 3's file is made by `NOMADS_BAKE=/tmp/planet-75m/land bun scripts/globe-tiers.ts --seed 1
+// (--tx, --ty) of a face, started from tier 3's heights carried down (the chain's own carry; tier 3's file is made by `NOMADS_BAKE=$HOME/.cache/nomads-bakes/land bun scripts/globe-tiers.ts --seed 1
 // --key <key> --last 3`), the cells round it held (tier 5: at the bake's heights; tier 4: at the carried ones). The law is the tier's own, TIER_LAWS[tier] (src/gpu/globe/tiers.ts): its
-// routing, one rain, the band-limited hold and its schedule of step lengths; `--steps` stops short of the schedule. Resumable (state in /tmp/planet-75m/land/<name>/); pictures and measures with --render.
+// routing, one rain, the band-limited hold and its schedule of step lengths; `--steps` stops short of the schedule. Resumable (state in $HOME/.cache/nomads-bakes/land/<name>/); pictures and measures with --render.
 //   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --tier 4 --budget 230
-//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --tier 4 --render --view 1024,1024,1024 --out /tmp/planet-75m/land/view/range.png
+//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --tier 4 --render --view 1024,1024,1024 --out $HOME/.cache/nomads-bakes/land/view/range.png
 //   --tier 4            the region at the 150 m tier (a run of its own); --from4 <name> starts a tier-5 run from a tier-4 run's state
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import { releaseGpu, theGpu } from "../src/gpu/device";
 import { LAND_HALO, LandRegion, readCells, refineRegion, regionBlock4, regionStart, type LandState } from "../src/gpu/globe/land";
 import { TIER_LAWS, tierTableOf } from "../src/gpu/globe/tiers";
 import { readPlanet } from "../src/gpu/globe/window";
+import { BAKE } from "../src/gpu/globe/bakedir";
 import { patchAt } from "../src/gpu/globe/patch";
 import { STORE } from "./globe-planet";
 import { diskStore } from "./globe-window";
@@ -23,7 +24,7 @@ const seed = 1, key = arg("key", "7f6ff6c82cdd");
 const name = arg("name", "range"), face = Number(arg("face", "0")), tx = Number(arg("tx", "20")), ty = Number(arg("ty", "12")), tiles = Number(arg("tiles", "12")), TIER = Number(arg("tier", "5"));
 const down = 2 ** (5 - TIER), size5 = tiles * 256, x05 = tx * 256, y05 = ty * 256;
 const size = size5 / down, x0 = x05 / down, y0 = y05 / down, HL = 2, S = size + 2 * HL, cellM = 75 * down, per = 1 << TIER;
-const bake = arg("bake", `/tmp/planet-75m/${seed}-${key}`), landDir = arg("land-dir", process.env.NOMADS_LAND ?? "/tmp/planet-75m/land"), work = join(landDir, name);
+const bake = arg("bake", `\${BAKE}/\${seed}-\${key}`), landDir = arg("land-dir", process.env.NOMADS_LAND ?? join(BAKE, "land")), work = join(landDir, name);
 mkdirSync(work, { recursive: true });
 const budget = Number(arg("budget", "200")), law = TIER_LAWS[TIER];
 const dtAt = (step: number) => law.dtMy[Math.min(step, law.dtMy.length - 1)];

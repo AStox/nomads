@@ -2,9 +2,10 @@
 // stored file, every piece of it is the same cell by cell whatever patch it is made on (tile independence: patches at offsets that are not tiles, across tile and face edges, equal the
 // files bytes for bytes), and the relaxation is the same bytes visited in the reverse order. Each case alone:
 //   lockf /tmp/nomads-gpu.lock bun test ./src/gpu/globe/water-global.test.ts -t "<name>" --timeout 280000
+import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { releaseGpu, theGpu } from "../device";
-import { BakeDir } from "./bakedir";
+import { BAKE, BakeDir } from "./bakedir";
 import { patchAt, type Patch } from "./patch";
 import { TILE } from "./grid";
 import type { Ctx } from "./stages";
@@ -13,7 +14,7 @@ import { banksStage, beginsStage, coef1Stage, coef2Stage, finalPass, globalWater
 import { mapped, unmap, waterFiles } from "./water";
 
 afterAll(releaseGpu);
-const T = STAGED_TIER, SCRATCH = "/tmp/planet-75m/water-scratch", cfg = { climate: stagedClimate, tier: T };
+const T = STAGED_TIER, SCRATCH = join(BAKE, "water-scratch"), cfg = { climate: stagedClimate, tier: T };
 let fixture: Promise<Ctx> | undefined;
 const ready = () => (fixture ??= (async () => {
   const gpu = await theGpu(), ctx = await stagedPlanet(gpu, new BakeDir(`${SCRATCH}/stage-t${T}`)), p = await globalWater(ctx, cfg, 280);

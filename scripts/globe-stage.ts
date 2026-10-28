@@ -1,4 +1,4 @@
-// A fine stage of the 75 m tier over the whole planet (src/gpu/globe/stages.ts), in calls of at most --budget seconds into /tmp/planet-75m/<seed>-<planet key>/: run it again until it
+// A fine stage of the 75 m tier over the whole planet (src/gpu/globe/stages.ts), in calls of at most --budget seconds into the bake directory (bakedir.ts BAKE, default ~/.cache/nomads-bakes), in <seed>-<planet key>/: run it again until it
 // says done. `--only a,b,c` makes just those tiles (a tile's number is face * T * T + ty * T + tx, T = 2^tier tiles along a face: 32 at tier 5, 16 at tier 4); `--faces 4` makes the tiles of one face.
 //   --block 2 makes 2 by 2 tiles at a patch (the halo's cost shared; the bytes do not change)
 //   bun scripts/globe-stage.ts --stage terrain --seed 1 --key <planet key> [--tier 5]     # --tier 4 for the 195.6 km planet's bake

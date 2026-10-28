@@ -1,6 +1,6 @@
 // load, wheel out from the opening view to orbit and back in; report errors, the badge and the frame rate at the ends
 import { launch, load, take, sleep, summarize } from "./lib";
-const r = await launch({ profile: "/tmp/globe-fix-lead2/chrome" });
+const r = await launch({ profile: process.env.PROFILE ?? "/tmp/globe-fix-lead2/chrome" });
 try {
   const L = await load(r, "?hour=13&warm=0");
   console.log("ready", Math.round(L.ready), "firstDone", Math.round(L.firstDone), "gpuVisible", Math.round(L.gpuVisible), "readyAt", Math.round(L.readyAt));

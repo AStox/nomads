@@ -982,8 +982,8 @@ async function check(m) {
   if (m.op === "roll") { R.debugRoll(m.kx, m.ky); return true; }
   // the share each block of the drawn window is drawn at (2^-eff of what its ground grew) and where it stands in the window's cells (plan R6: the blocks the screen can touch must all show one share)
   if (m.op === "shares") return curWin?.blockRecs && { k0: curWin.blockK0, view: curWin.blockView, blocks: curWin.blockRecs.map((b) => ({ key: b.key, eff: curWin.blockKd?.get(b.key) ?? b.k, made: b.k, c0: b.X - curWin.x0, z0: curWin.y0 + 256 - (b.Y + 64) })) };
-  // whether the page is still making what it draws (sprites made on demand, the window's blocks, a switch): a still taken before it is idle shows the nearest sprite made, so a gate waits for busy to stay false
-  if (m.op === "idle") return { busy: !!refreshing || !!curWin?.blocksBusy || switching || building || !!prepared, sprites: nStatic + (dyn ? dynUsed() : 0), asked: asked.size };
+  // whether the page is still making what it draws (the planet's level and fine pages still rising, sprites made on demand, the window's blocks, a switch): a still taken before it is idle shows the nearest sprite made, so a gate waits for busy to stay false
+  if (m.op === "idle") return { busy: !!planetLayer?.rising?.() || !!refreshing || !!curWin?.blocksBusy || switching || building || !!prepared || surveying > 0 || blkMaking, sprites: nStatic + (dyn ? dynUsed() : 0), asked: asked.size };
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
   // (kind, colour, flags) and whose it is
@@ -1030,6 +1030,8 @@ async function whereOf(id) {
 // first time) and tells the page its frame and heights; the page puts its view in the new frame and names the ground in every frame after (its gid),
 // and the first frame that names it is the one the renderer switches on (applyGround), so a frame is never drawn on ground its coordinates are not in.
 let lastLut = null, lutShown = false;
+// the exaggeration the last frame drew the relief at, which the folds of a ground made ready ahead are traced at (readyGround)
+let lastExag = null;
 // The map q the page works out for the camera's target (live.js latticeAt) is posted back with each frame done (planetQ), for the checks.
 let planetQ = null, planetRelief = null, reliefAtMs = 0;
 // The relief under a grid of screen points as drawn (heights in drawn metres, -1 off the planet), for the page's picks and zoom anchors (live.js reliefAt): each point's ray meets the sphere raised to the height
@@ -1039,22 +1041,97 @@ const RELIEF_W = 17, RELIEF_H = 11;
 // held, which depends on the way the place was reached (a place reached zooming out holds finer tiles) and steps as the zoom crosses a level, moving the picture, the camera's lift and the point a wheel zoom holds by tens of px
 // the widest box the lift averages over, where the camera is still a perspective one over a whole planet [design: 100 km]
 const LIFT_REACH_M = 100e3;
-function drawnHeight(P) {
-  const cap = Math.min(5, planetLayer?.level?.() ?? 5), t0 = Math.floor(cap), ft = cap - t0, H = planet.pyramid.heightAt;
+function drawnHeight(P, tier) {
+  const H = planet.pyramid.heightAt;
+  if (tier !== undefined) return Math.max(0, H(planet.G.FRAMES, P, tier));
+  const cap = Math.min(5, planetLayer?.level?.() ?? 5), t0 = Math.floor(cap), ft = cap - t0;
   return Math.max(0, H(planet.G.FRAMES, P, t0) * (1 - ft) + (ft > 0 ? H(planet.G.FRAMES, P, t0 + 1) * ft : 0));
+}
+// The tier the planet pass marches the ray of canvas point (sx, sy) at: the surface it meets is one tier's bilinear cells, the tier whose cells are at most an art pixel across where the ray enters the shell, never finer than
+// the whole view holds (the level cap's ceiling): wgsl/globe.js gMarch, from the same camera, shell top and cap the last draw used (planet.js shown). The per-pixel dither between tiers and the fine pages shade the surface and
+// never move it, so this tier's height is the height the picture is drawn at. The finest tier where the ray misses the shell.
+const ART_PX = 2, TOP_TIER = 5;
+function drawnTier(cam, sx, sy) {
+  const sh = planetLayer?.shown?.();
+  if (!sh) return TOP_TIER;
+  const nx = ((Math.floor(sx / ART_PX) + 0.5) * ART_PX / cam.w) * 2 - 1, ny = 1 - ((Math.floor(sy / ART_PX) + 0.5) * ART_PX / cam.h) * 2, ok = cam.ortho;
+  const lat = [0, 1, 2].map((i) => nx * cam.aspect * cam.right[i] + ny * cam.up[i]);
+  const rd = [0, 1, 2].map((i) => cam.fwd[i] + (1 - ok) * cam.tanH * lat[i]), rl = Math.hypot(rd[0], rd[1], rd[2]);
+  for (let i = 0; i < 3; i++) rd[i] /= rl;
+  const off = [0, 1, 2].map((i) => cam.off[i] + ok * cam.hh * lat[i]), po = [0, 1, 2].map((i) => cam.o[i] + ok * cam.hh * lat[i]);
+  const b = po[0] * rd[0] + po[1] * rd[1] + po[2] * rd[2], s0 = 2 * (cam.T[0] * off[0] + cam.T[1] * off[1] + cam.T[2] * off[2]) + off[0] ** 2 + off[1] ** 2 + off[2] ** 2;
+  const c1 = s0 - sh.hmaxR * (2 + sh.hmaxR), d1 = b * b - c1;
+  if (d1 < 0 || (b > 0 && c1 > 0)) return TOP_TIER;
+  const tIn = Math.max(c1 / (-b + Math.sqrt(d1)), 1e-6);
+  const mpp = ART_PX * ((2 * ((1 - ok) * cam.tanH * tIn + ok * cam.hh)) / cam.h) * cam.radiusM, cell0 = ((cam.radiusM * Math.PI) / 2 / 256) * 0.8;
+  const level = Math.min(TOP_TIER, Math.max(0, Math.log2(cell0 / Math.max(mpp, 1e-3))));
+  return Math.min(Math.ceil(level), Math.ceil(sh.cap), TOP_TIER);
+}
+// The height (metres) the picture draws at unit point P: the surface of the tier its pixel marches at, found where P lands through two fixed-point steps (the pixel depends on the height and the tier on the pixel). The
+// sphere-level height where P is off the screen or behind the planet.
+function drawnHeightAt(cam, P, ex) {
+  let h = drawnHeight(P);
+  for (let k = 0; k < 2; k++) {
+    const s = cam.project([P[0] * (1 + (h * ex) / cam.radiusM), P[1] * (1 + (h * ex) / cam.radiusM), P[2] * (1 + (h * ex) / cam.radiusM)]);
+    if (!s) return h;
+    h = drawnHeight(P, drawnTier(cam, s[0], s[1]));
+  }
+  return h;
 }
 function reliefGrid(cam, lift, ex) {
   const d = new Float32Array(RELIEF_W * RELIEF_H);
   for (let j = 0; j < RELIEF_H; j++)
     for (let i = 0; i < RELIEF_W; i++) {
+      const sx = (i * canvas.width) / (RELIEF_W - 1), sy = (j * canvas.height) / (RELIEF_H - 1), tier = drawnTier(cam, sx, sy);
       let h = lift;
       for (let k = 0; k < 2 && h >= 0; k++) {
-        const P = cam.pick((i * canvas.width) / (RELIEF_W - 1), (j * canvas.height) / (RELIEF_H - 1), h);
-        h = P ? drawnHeight(P) * ex : -1;
+        const P = cam.pick(sx, sy, h);
+        h = P ? drawnHeight(P, tier) * ex : -1;
       }
       d[j * RELIEF_W + i] = h;
     }
   return { w: RELIEF_W, h: RELIEF_H, d };
+}
+// The ground the planet pass draws under canvas point (sx, sy), exactly: the first meeting of the pixel's ray with the drawn surface (its tier's bilinear cells). The ray is marched from where it enters the shell by the
+// clearance over the ground, which the ray's height and the ground's can close at 1 + SLOPE_MAX ex per metre along it at most, so no ridge between two samples is skipped (sampling the raised spheres a fixed step of height
+// apart did skip them where the ray grazes: the pick landed a hundred metres behind the ridge the picture shows), and the first sample under the ground is bisected. Drawn metres in, the unit point and its terrain
+// height out; null where the ray does not meet the ground.
+const SLOPE_MAX = 1.2, MARCH_MIN_M = 2;
+function surfaceUnder(cam, sx, sy, ex) {
+  const sh = planetLayer?.shown?.();
+  if (!sh) return null;
+  const tier = drawnTier(cam, sx, sy), R = cam.radiusM, ok = cam.ortho;
+  const nx = ((Math.floor(sx / ART_PX) + 0.5) * ART_PX / cam.w) * 2 - 1, ny = 1 - ((Math.floor(sy / ART_PX) + 0.5) * ART_PX / cam.h) * 2;
+  const lat = [0, 1, 2].map((i) => nx * cam.aspect * cam.right[i] + ny * cam.up[i]), rd = [0, 1, 2].map((i) => cam.fwd[i] + (1 - ok) * cam.tanH * lat[i]), rl = Math.hypot(rd[0], rd[1], rd[2]);
+  for (let i = 0; i < 3; i++) rd[i] /= rl;
+  const off = [0, 1, 2].map((i) => cam.off[i] + ok * cam.hh * lat[i]), x0 = [0, 1, 2].map((i) => cam.T[i] + off[i]);
+  const b = x0[0] * rd[0] + x0[1] * rd[1] + x0[2] * rd[2], s0 = 2 * (cam.T[0] * off[0] + cam.T[1] * off[1] + cam.T[2] * off[2]) + off[0] ** 2 + off[1] ** 2 + off[2] ** 2;
+  const c1 = s0 - sh.hmaxR * (2 + sh.hmaxR), d1 = b * b - c1;
+  if (d1 < 0 || (b > 0 && c1 > 0)) return null;
+  const tOut = -b + Math.sqrt(d1), tIn = Math.max(c1 / tOut, 0), at = (t) => [x0[0] + t * rd[0], x0[1] + t * rd[1], x0[2] + t * rd[2]];
+  // the clearance of the ray at t over the ground, drawn metres (negative under it), and the unit point
+  const clear = (t) => { const x = at(t), l = Math.hypot(x[0], x[1], x[2]), u = [x[0] / l, x[1] / l, x[2] / l]; return { c: (l - 1) * R - drawnHeight(u, tier) * ex, u }; };
+  const slope = 1 + SLOPE_MAX * ex;
+  let t = tIn, prev = tIn;
+  for (let k = 0; k < 100000 && t <= tOut; k++) {
+    const { c } = clear(t);
+    if (c <= 0) {
+      let lo = prev, hi = t;
+      for (let j = 0; j < 30; j++) { const m = (lo + hi) / 2; if (clear(m).c > 0) lo = m; else hi = m; }
+      const u = clear(hi).u;
+      return { p: u, y: drawnHeight(u, tier) };
+    }
+    prev = t;
+    t += Math.max(c / slope, MARCH_MIN_M) / R;
+  }
+  return null;
+}
+// the page names a pixel in its frame (live.js setCursor) and has the ground under it as the last picture drew it; and a place (setProbe: the ground its camera holds), and has the height drawn there. The height under a pixel
+// is not the held place's: a point held at the height the cursor shows is not where the ray meets the surface unless the surface is flat, and chasing it up a slope moved the held point by kilometres
+function groundAnswer(f, g) {
+  const c = f.cursor, hit = c && g ? surfaceUnder(g.cam, c[0], c[1], g.ex) : null;
+  const pr = f.probe && planet ? (() => { const P = planet.G.fromLatLon((f.probe[0] * Math.PI) / 180, (f.probe[1] * Math.PI) / 180); return { lat: f.probe[0], lon: f.probe[1], y: g ? drawnHeightAt(g.cam, P, g.ex) : drawnHeight(P) }; })() : null;
+  return hit || pr ? { at: hit ? c : null, p: hit?.p, y: hit?.y, probe: pr } : null;
 }
 // The pages the planet pass reads where no window is (the view is wider than a window covers, under about zoom 3, or the camera is away from any): a block of them round the camera's page, made behind the frames and
 // moved by whole pages when the camera is more than half a page from its middle. Pages are global, so a window made later finds those that are its own. blk is the block the painter has (first page, in cells)
@@ -1194,6 +1271,7 @@ const winNear = (want) => {
 };
 function destroyWindow(w) {
   w.dead = true;
+  w.prep?.cancel(); w.prep = null;
   // a window's ground is its pages, which the page cache lets go of when it needs the slots (groundwin.js ensurePages)
   if (w.blockRecs) { w.blockRecs = null; queueMicrotask(sweepBlocks); }
 }
@@ -1220,6 +1298,7 @@ async function groundWant(m) {
       if (want.mode === "home") {
         if (!S.win && !prepared) continue;
         prepared = { gid: ++gids, mode: "home" };
+        planet.wins.setPending(null);
         post({ type: "ground", gid: prepared.gid, mode: "home", frame: null, fields: home.fields });
         continue;
       }
@@ -1235,7 +1314,13 @@ async function groundWant(m) {
       // a window made now has its objects made too, and its ground is shown once the blocks the view can touch are made (one level of detail across the screen, plan R6: until then the screen stays as it was)
       const near = fresh ? startObjects(w, viewCells(w, want), !spec) : null;
       if (!spec) {
+        // the page switches to this ground at its next frame: its pages are kept from here (another window's pages made meanwhile would take them, and the switch would make them again with the frames held), and any
+        // that a kept window had lost are made now, behind the frames; its folds are traced behind the frames too, while the blocks the view can touch are made
+        planet.wins.setPending(w);
+        await planet.wins.ensure(w);
+        const prep = readyGround(w);
         if (near) await near;
+        w.prep = await prep;
         prepared = { gid: ++gids, mode: "win", win: w };
         post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon, face: w.face, x0: w.x0, y0: w.y0 }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null } });
       }
@@ -1244,6 +1329,17 @@ async function groundWant(m) {
     console.error("window", err);
     post({ type: "windowError", error: String((err && err.stack) || err) });
   } finally { building = false; }
+}
+// A window's ground made ready for the switch behind the frames (webgpu.js prepareGround): its folds traced, kept on the window for applyGround. null where there is nothing to hand over (no frame has told the
+// exaggeration yet, a page is missing): the switch then traces the folds in its first frame.
+async function readyGround(w) {
+  w.prep?.cancel(); w.prep = null;
+  if (lastExag === null) return null;
+  try {
+    const prep = await R.prepareGround({ ...w.pack, pages: await planet.wins.pageSet(w), top: w.pack.grid.top }, lastExag);
+    if (w.dead) { prep?.cancel(); return null; }
+    return prep;
+  } catch (err) { console.warn("prepare ground", err); return null; }
 }
 // the objects of a window (a promise of GPU buffers, groundwin.js startObjects): kept on the window, handed to the drawn source when they arrive, their size told to the page. By block, the promise
 // answered is that of the blocks the view can touch (the others follow); the whole window's objects are not waited for.
@@ -1313,7 +1409,8 @@ async function applyGround(p) {
       await R.setSources(sources());
       settleBound();
       // the window's pages (made again if the cache let one go) into the painter's page textures, only those it does not already hold, and the table turned on for the whole screen
-      const set = await planet.wins.pageSet(w), r = R.setGroundPages({ ...w.pack, pages: set, top: w.pack.grid.top });
+      const set = await planet.wins.pageSet(w), r = R.setGroundPages({ ...w.pack, pages: set, top: w.pack.grid.top, prep: w.prep });
+      w.prep?.cancel(); w.prep = null;
       if (!r.on) throw new Error(`the window's pages are not all there: ${JSON.stringify(r.missing)}`);
       // the pages round the window's, for the planet pass: the block held stays until the new one is made behind the frames (a page it loses to another window takes it away, onBlockLost) and is given to the painter when it is there
       planet.wins.ensureBlock(w).then((b) => { if (curWin === w) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err));
@@ -1331,15 +1428,20 @@ async function applyGround(p) {
     R.farBuild(farLevels());
     curGid = p.gid;
     if (prepared === p) prepared = null;
-    if (p.mode === "win") await surveyWindow();
+    // the looks the new objects want are asked of the GPU and taken in when they come, not waited for: a frame has no need of them to draw what is already known, and the wait held every frame for as long as the GPU was busy
+    if (p.mode === "win") surveyWindow().catch((err) => console.error("survey", err));
     if (p.mode === "win" && p.win.blockPlan && !p.win.blockRecs && !p.win.blocksBusy) startObjects(p.win, lastCam ? viewCells(p.win, lastCam) : undefined);
   } finally { switching = false; applyMs = performance.now() - tApply; }
 }
+let surveying = 0;
 async function surveyWindow() {
-  looks.addAll(await R.survey(0, 0, (CODES * CODES) / 32));
-  R.setMeta(looks.meta());
-  growTable();
-  refreshSprites();
+  surveying++;
+  try {
+    looks.addAll(await R.survey(0, 0, (CODES * CODES) / 32));
+    R.setMeta(looks.meta());
+    growTable();
+    refreshSprites();
+  } finally { surveying--; }
 }
 // the objects of the window drawn arrive: its source takes them in place of the empty one (a window not drawn takes them when it is)
 async function attachObjects(w) {
@@ -1368,7 +1470,7 @@ let pending = null, rendering = false, frames = 0, frontsSent = "";
 // A frame is not drawn when it cannot differ from the one drawn: its views, planet, light and canvas are those of the last drawn frame, nothing the renderer holds changed since (R.rev), nothing it builds is half
 // done (R.settled), the planet layer says its picture is settled, and it has been so for a second (what the frames' own calls start, as the planet block's follow, has been started by then). The canvas keeps
 // the last picture it showed. The views' animation frame (the sea's and the leaves' clock, live.js) changes about six times a second: that is drawn, and is not a change that restarts the second.
-let liftInfo = null, lastKey = "", lastAnim = "", lastRev = -1, sameSince = 0, skips = 0;
+let liftInfo = null, groundCam = null, lastKey = "", lastAnim = "", lastRev = -1, sameSince = 0, skips = 0;
 function frameKey(f) {
   return JSON.stringify([f.views.map((v) => [{ ...v.U, frame: 0 }, v.alpha, v.present, v.fires, v.xray, v.live?.length, v.prims?.length, v.liveRows?.length]), f.planet, f.exag, f.cast, f.seaRGB, f.relief, f.groundOff, f.gid, f.ahead, canvas.width, canvas.height]);
 }
@@ -1388,6 +1490,7 @@ function liveInstances(list) {
 function render() {
   const f = pending;
   if (!f || rendering) return;
+  if (f.exag !== undefined) lastExag = f.exag;
   // a frame names the ground its view's coordinates are in: the one prepared is switched to when the page first sends it, and a frame of an earlier one is stale
   if (f.gid !== undefined && f.gid !== curGid) {
     if (prepared && f.gid === prepared.gid) {
@@ -1399,7 +1502,7 @@ function render() {
         // the page already stands in this ground's frame, so the same ground is tried again after a back-off (a page slot is often only held for a moment by a window being made); past ten tries it is dropped
         // and the page asked again (groundFailed), which makes a fresh one
         if ((p.fails = (p.fails ?? 0) + 1) < 10) p.retryAt = performance.now() + 150 * p.fails;
-        else { if (prepared === p) prepared = null; curWin = null; if (S) S.win = null; post({ type: "groundFailed", gid: p.gid }); }
+        else { if (prepared === p) { prepared = null; planet.wins.setPending(null); } curWin = null; if (S) S.win = null; post({ type: "groundFailed", gid: p.gid }); }
       });
       return;
     }
@@ -1414,7 +1517,7 @@ function render() {
     pending = null; skips++;
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, skipped: true, settled: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: 0, gpuMs: 0, passes: R.stats.passes, counts: R.stats.counts, at: 0, fronts, lift: planetLift, liftInfo, ground: f.planet ? groundAnswer(f, groundCam) : null, q: planetQ, relief: planetRelief, applyMs, skipped: true, settled: true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     return;
   }
   lastKey = key; lastAnim = anim;
@@ -1434,13 +1537,15 @@ function render() {
   // the planet under the ladder's views, from the camera the page chose (live.js planetParams)
   const q = f.planet?.q ?? null;
   planetQ = q;
+  let groundAns = null;
   const under = f.planet && planetLayer && ((enc, target) => {
     // the camera stands above the ground under its target, as drawn (lifted by the relief's exaggeration), never inside it
     // the ladder's metre is a cell's 75 m over its own cells and its heights are true metres, so a parallel camera draws the relief as exag times the window's scale to keep their ratio
     const ex = f.exag * (1 + (f.planet.ortho ?? 0) * ((f.planet.scale ?? 1) - 1)), sx = ex / f.exag;
     // from the tier the screen shows (planet.js cap), not the finest held: a place reached zooming out holds finer tiles than one reached zooming in, and the lift (the picture's height) must not carry that history
     // averaged over the ground a half screen reaches round the target (nine points a quarter of a half screen apart, a box the view's own size): the height of the one point under the target varies by tens of metres over the
-    // kilometres a wheel zoom or a drag moves the target on a slope, and each metre is a tenth of a pixel the picture slides by (the page's solve cannot know it, so a held point drifted); the box moves slowly
+    // kilometres a wheel zoom or a drag moves the target on a slope, and each metre is a tenth of a pixel the picture slides by; the box moves slowly. It is answered for the page, which names the lift of a frame from the last
+    // pyr it has (live.js liftOf, the lift the page solved its holds for) and so draws with that; the worker's own lift is used where the page names none (the first frames, a jump of the target)
     const P0 = planet.G.fromLatLon((f.planet.lat * Math.PI) / 180, (f.planet.lon * Math.PI) / 180), [E0, N0] = planet.G.eastNorth(P0), reach = Math.min((f.planet.tanH * f.planet.dist) / planetLayer.radiusM, LIFT_REACH_M / planetLayer.radiusM);
     let hs = 0;
     for (let a = -1; a <= 1; a++)
@@ -1449,14 +1554,16 @@ function render() {
         hs += drawnHeight([v[0] / l, v[1] / l, v[2] / l]);
       }
     const pyr = (hs / 9) * ex;
-    liftInfo = { pyr, tier: planetLayer.level?.() ?? 5, lo: f.planet.liftOrtho, lm: f.planet.liftM, sx, ex };
-    const lift = (planetLift = Math.max(0, pyr + (f.planet.liftOrtho ?? f.planet.ortho ?? 0) * (f.planet.liftM != null ? f.planet.liftM * sx - pyr : 0)));
+    liftInfo = { pyr, tier: planetLayer.level?.() ?? 5, lo: f.planet.liftOrtho, lm: f.planet.liftM, sx, ex, lat: f.planet.lat, lon: f.planet.lon, box: reach * planetLayer.radiusM };
+    const lift = (planetLift = Number.isFinite(f.planet.lift) ? f.planet.lift : Math.max(0, pyr + (f.planet.liftOrtho ?? f.planet.ortho ?? 0) * (f.planet.liftM != null ? f.planet.liftM * sx - pyr : 0)));
     const cam = planetCam({ ...f.planet, q, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
     if (performance.now() - reliefAtMs > 100) { planetRelief = reliefGrid(cam, lift, ex); reliefAtMs = performance.now(); }
+    groundCam = { cam, ex };
     blockFollow(cam);
     // the page ground the ladder reads, for the planet pass's finest tier (planet.js, the window's face and corner cells are the pages' frame), with the ladder's own season, frame and relief so water, grass and slope light match it
     const pg = R.pageGround(), pages = curWin && pg.on && winCovers(cam) ? { ...pg, face: curWin.face, x0: curWin.x0, y0: curWin.y0 } : pg.block ? { ...pg, on: false } : null, v0 = views[0]?.U;
     planetLayer.draw(enc, target, cam, { w: canvas.width, h: canvas.height, art: 2, spr: f.planet.spr ?? v0?.spr, canopy: f.planet.canopy, ortho: f.planet.ortho, sun: f.planet.sun, moon: f.planet.moon, moonMix: f.planet.moonMix, amb: f.planet.amb, exag: ex, riverCut: f.planet.riverCut, season: v0?.season, frame: v0?.frame, relief: f.relief, pages, light: f.planet.light, lightFade: f.planet.lightFade, lightGround: pages ? R.lightGround() : null, streams: pages ? R.streamGround() : null });
+    groundAns = groundAnswer(f, groundCam);
   });
   noteLevel(f.cam);
   noteMoved(f.cam);
@@ -1465,11 +1572,13 @@ function render() {
   const ms = performance.now() - t0;
   rendering = false;
   lastRev = R.rev;
+  // the lift this frame was drawn with: the next frame may begin (and set planetLift) before this one's work is done, and the page picks against the picture it shows
+  const doneLift = planetLift;
   device.queue.onSubmittedWorkDone().then(() => {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: planetLift, liftInfo, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: doneLift, liftInfo, ground: groundAns, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }

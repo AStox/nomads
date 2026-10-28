@@ -1,7 +1,9 @@
 // The island's erosion (the generator's own run, src/gpu/terrain/island.ts) drawn and measured the way a region of the planet is (scripts/globe-land-region.ts), so the two are compared by the
 // same renderer and the same lattice and block measures.
-//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-island.ts --seed 1 --out /tmp/planet-75m/land/view/island1.png
+//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-island.ts --seed 1 --out $HOME/.cache/nomads-bakes/land/view/island1.png
 import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { BAKE } from "../src/gpu/globe/bakedir";
 import { releaseGpu, theGpu } from "../src/gpu/device";
 import { planFrom, upstreamRaw } from "../src/gpu/terrain/upstream";
 import { CREEP } from "../src/terrain/geology";
@@ -17,7 +19,7 @@ try {
   const raw = await upstreamRaw(g, planFrom(rng(seed))), up = raw.up, n = N * N, area = new Float64Array(n).fill(1);
   for (let q = n - 1; q >= 0; q--) { const k = up.order[q]; if (up.to[k] !== k) area[up.to[k]] += area[k]; }
   const at = (x: number, y: number) => Math.min(N - 1, Math.max(0, y)) * N + Math.min(N - 1, Math.max(0, x));
-  writeFileSync(arg("out", `/tmp/planet-75m/land/view/island${seed}.png`), renderLand((x, y) => up.height[at(x, y)], (x, y) => area[at(x, y)], [0, 0, N], scale, Number(arg("river", "100"))));
+  writeFileSync(arg("out", join(BAKE, "land", "view", `island${seed}.png`)), renderLand((x, y) => up.height[at(x, y)], (x, y) => area[at(x, y)], [0, 0, N], scale, Number(arg("river", "100"))));
   const live = Uint8Array.from(up.height, (h, k) => (h > 0 && k % N > 8 && k % N < N - 8 && Math.floor(k / N) > 8 && Math.floor(k / N) < N - 8 ? 1 : 0));
   const res: Record<string, unknown> = { seed, land: live.reduce((a, b) => a + b, 0), lattice30: lattice(up.to, area, N, live, 30, 8), lattice300: lattice(up.to, area, N, live, 300, 8) };
   const h256 = Int32Array.from(up.height, (v) => Math.round(v * 256));

@@ -7,7 +7,8 @@ import { dispatch, pipeline, pipelineSoon, readback, storage } from "../src/gpu/
 import { run, segments } from "../src/gpu/terrain/scenery";
 import { FINE, RASTER, fineKernel, layoutOf, rasterKernel, tileScenery } from "../src/gpu/wgsl/terrain-scenery";
 import { GRID_PITCH, FINE_PITCH, PAGE_CELLS, PAGE_FINE_LAYER_WORDS, PAGE_FINE_PITCH, PAGE_FINE_WORDS, PAGE_GRID_WORDS, PAGE_HALO_NODES, PAGE_HALO_VERTS, PAGE_HN, PAGE_MASK_WORDS, PAGE_NG, PAGE_NV, PAGE_PARAMS, PAGE_SCRATCH_LAYER_WORDS, pageFineKernel, pageGridKernels, pageHeightPlaneKernel, pageMaskKernel } from "../src/gpu/wgsl/terrain-window";
-import { SCATTER_HALO, RIVER_HALO, packTile, scatterTile, warmScatter, type TileSource } from "../src/gpu/globe/scatter";
+import { SCATTER_HALO, WINDOW_HALO, RIVER_HALO, packTile, scatterTile, warmScatter, type TileSource } from "../src/gpu/globe/scatter";
+import { streamCurves } from "../src/gpu/globe/streamcurve";
 import { placeKernels } from "../src/gpu/globe/windowobjects";
 import type { Gpu } from "../src/gpu/device";
 
@@ -16,10 +17,10 @@ export { openTile } from "../src/gpu/globe/windowobjects";
 export { SCATTER_HALO, RIVER_HALO, scatterTile, warmScatter };
 
 const Q16 = 65536, Q24 = 16777216;
-const halo = SCATTER_HALO, L = layoutOf(tileScenery(halo)), FINE_K = fineKernel(L), FINE_RECT = fineKernel(L, true), RASTER_RECT = rasterKernel(true);
+const halo = WINDOW_HALO, L = layoutOf(tileScenery(halo, true)), FINE_K = fineKernel(L), FINE_RECT = fineKernel(L, true), RASTER_RECT = rasterKernel(true);
 
-// The streams of a window of cells and the 8 round it: a segment from each channel cell to its receiver, in metres from the window's centre with z along the face's Y (the window's own rows),
-// as scatter.ts riversOf makes them for a tile.
+// The streams of a window of cells and the 8 round it: each channel cell's step to its receiver as a smooth curve (src/gpu/globe/streamcurve.ts, a pure function of the stream's own cells, so
+// windows agree where they overlap), in metres from the window's centre with z along the face's Y (the window's own rows), as scatter.ts riversOf makes them for a tile.
 export function windowRivers(source: TileSource): FineRiver[][] {
   const S = 256 + 2 * RIVER_HALO, n = S * S;
   const height = source.plane<Int32Array>("height", RIVER_HALO), to = source.recv(RIVER_HALO), chn = source.plane<Uint8Array>("chn", RIVER_HALO), flow = source.plane<Uint32Array>("flow", RIVER_HALO);
@@ -27,14 +28,16 @@ export function windowRivers(source: TileSource): FineRiver[][] {
   // the groundwater's share of the flow and what the valley's fill carries under the bed, as the island's streams hold them (the painter's dry beds follow them)
   const base = source.plane<Uint16Array>("base", RIVER_HALO), under = source.plane<Uint16Array>("under", RIVER_HALO);
   const x = (i: number) => (((i % S) - RIVER_HALO) * CELL + CELL / 2) - SIZE / 2, z = (i: number) => ((Math.floor(i / S) - RIVER_HALO) * CELL + CELL / 2) - SIZE / 2;
+  const ok = (i: number) => !!chn[i] && !!flow[i], curve = streamCurves(n, to, ok, flow, x, z, CELL);
   for (let i = 0; i < n; i++) {
-    if (!chn[i] || !flow[i]) continue;
+    if (!ok(i)) continue;
     const j = to[i];
     if (j < 0 || j === i) continue;
     const q = flow[i] / Q16, qbf = q * BANKFULL, wooded = (tree[i] + shrub[i]) / 255 >= WOODED;
     const run2 = Math.hypot(x(j) - x(i), z(j) - z(i)), s = Math.max((height[i] - height[j]) / 256 / run2, 1e-4 / CELL);
-    const point = (k: number): FineRiver => [x(k), z(k), q, base[i] / 65535, qbf, s, under[i] / 4096, bankWidth(qbf, wooded), bankDepth(qbf, s)];
-    lines.push([point(i), point(j)]);
+    const xz = curve(i), line: FineRiver[] = [];
+    for (let k = 0; k < xz.length; k += 2) line.push([xz[k], xz[k + 1], q, base[i] / 65535, qbf, s, under[i] / 4096, bankWidth(qbf, wooded), bankDepth(qbf, s)]);
+    lines.push(line);
   }
   return lines;
 }
@@ -74,10 +77,14 @@ export function pageAtlas(g: Gpu, slots: number): PageAtlas {
 }
 
 // A window as a source of pages: its streams binned, its cells packed and its lattice's field (the window's size, 71 MB), kept between calls so pages asked for at different times from the
-// same window repeat none of it (the CPU's part is 16 ms of the first call). The caller owns it and destroys it when no more of its pages will be asked for.
+// same window repeat none of it (the CPU's part is 16 ms of the first call, done in the stretches `pause` lets the frames run between). The caller owns it and destroys it when no more of its pages will be asked for.
 export interface PageSource { face: number; x0: number; y0: number; rivers: FineRiver[][]; segs: GPUBuffer; bins: GPUBuffer; packed: GPUBuffer; field: GPUBuffer; destroy(): void }
-export function pageSource(g: Gpu, source: TileSource, face: number, x0: number, y0: number): PageSource {
-  const rivers = windowRivers(source), { seg, table } = segments(rivers), words = packTile(source, 0, halo, 4);
+export async function pageSource(g: Gpu, source: TileSource, face: number, x0: number, y0: number, pause: () => Promise<void> = async () => {}): Promise<PageSource> {
+  const rivers = windowRivers(source);
+  await pause();
+  const { seg, table } = segments(rivers);
+  await pause();
+  const words = packTile(source, 0, halo, 4);
   words.set([x0 * 4 * CELL, y0 * 4 * CELL, face], L.GEO_AT);
   const segs = storage(g, seg), bins = storage(g, table), packed = storage(g, words), field = storage(g, L.FINE_WORDS * 4);
   return { face, x0, y0, rivers, segs, bins, packed, field, destroy: () => { for (const b of [segs, bins, packed, field]) b.destroy(); } };
@@ -157,5 +164,5 @@ export function pageEdges(p: { px: number; py: number }): { xm: PageEdge; xp: Pa
 // Every kernel a window's ground and scatter run, compiling off the frames' queue; resolves when all are made.
 export function warmWindow(g: Gpu): Promise<unknown> {
   const own: [string, string][] = [[RASTER_RECT, "raster"], [FINE_RECT, "fine"], [PAGE_FINE, "pageFine"], [PAGE_MASK_K, "pageMask"], [PAGE_HEIGHTS, "pageHeights"], [PAGE_HEIGHT, "pageHeight"], [PAGE_FOLDS, "pageBlurX"], [PAGE_FOLDS, "pageBlurY"], [PAGE_FOLDS, "pageGradient"]];
-  return Promise.all([warmScatter(g, halo), ...own.concat(placeKernels).map(([src, entry]) => pipelineSoon(g, src, entry))]);
+  return Promise.all([warmScatter(g, halo, true), ...own.concat(placeKernels).map(([src, entry]) => pipelineSoon(g, src, entry))]);
 }

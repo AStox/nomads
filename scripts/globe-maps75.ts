@@ -1,18 +1,19 @@
 // Pictures of the 75 m tier (the planet made by scripts/globe-tiers.ts and the fine stages): a whole face downsampled, and patches of 19.2 km at full 75 m, one across a face's
-// edge, each as height (hillshaded), rivers, rain and cover where those stages have been made. PNGs go to /tmp/planet-75m/maps/.
+// edge, each as height (hillshaded), rivers, rain and cover where those stages have been made. PNGs go to the bake directory (bakedir.ts BAKE, default ~/.cache/nomads-bakes), maps/.
 //   bun scripts/globe-maps75.ts --seed 1 --key 4c2a2cb36ba6 [--tier 5] [--radius <m>] --face 1 --patches 320:0:0,1214:0:0,40:0:0
 // A patch is `tile:dx:dy`: the tile's own cells moved by (dx, dy) cells (a negative dx on a tile on a face's west edge reaches across the edge).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { cellAcross, tileCount } from "../src/gpu/globe/patch";
 import { PLANET_CELL_M, PLANET_TIER, TILE, tierGrid } from "../src/gpu/globe/grid";
-import { bakeDir, tierFile } from "../src/gpu/globe/bakedir";
+import { BAKE, bakeDir, tierFile } from "../src/gpu/globe/bakedir";
+import { join } from "node:path";
 import { mappedField } from "../src/gpu/globe/ground";
 import { heightColor, mix, png, type RGB } from "./globe-maps";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
 const key = arg("key", process.env.NOMADS_PLANET_KEY ?? ""), seed = Number(arg("seed", "1"));
-if (!key) throw new Error("name the planet's key: --key <hash> (the directory under /tmp/planet-75m is <seed>-<key>)");
-const dir = bakeDir(seed, key), OUT = "/tmp/planet-75m/maps";
+if (!key) throw new Error("name the planet's key: --key <hash> (the directory under the bake directory is <seed>-<key>)");
+const dir = bakeDir(seed, key), OUT = join(BAKE, "maps");
 mkdirSync(OUT, { recursive: true });
 const TIER = Number(arg("tier", String(PLANET_TIER))), g = tierGrid(TIER), FN = g.fn, PER_FACE = tileCount(TIER) / 6, T = FN / TILE;
 // the planet's radius for the tier: the cell edge PLANET_CELL_M, 6 faces of FN cells, a face's edge a quarter of the equator [derived]

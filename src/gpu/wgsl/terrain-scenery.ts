@@ -22,7 +22,7 @@
 // tile can fall in the next tile east and south, so a quad has four destinations), the second writes them where the
 // counts' prefix over tiles and, within a tile, over quads in raster order put them: the arrays come out tile by tile,
 // each tile's things in the order they were laid down, whatever order the threads run in.
-import { N } from "../../terrain/grid";
+import { CELL, N } from "../../terrain/grid";
 import { NICHE, SHRUBS, TREES, TREE_MAX } from "../../terrain/niche";
 import { GROWTH_RESP, LMF, MAINT, RUE, SLA, UNDER_CROWN, pOf } from "../../terrain/growth";
 import { DBH, FERNS, FLOWERS, FUNGI, GX, GY, HEMERY, HERBS, M, PLANTS, QUAD, REINEKE, RM, SHAPE, SHRUB_MOST, SPECIES, STAND, STEP, TILES } from "../../terrain/flora";
@@ -40,10 +40,11 @@ export const ORE_CAP = 1 << 16;
 // the quads of the tiles' lattices meet and none is made by two tiles). `shift` is how many quarter cells the lattice's first vertex lies before a cell's centre (0 on the island, 2 on a
 // tile: a vertex u lies at cell coordinate (u - shift) / 4). A tile's own place (the world position of its corner in quarter metres, its face, the first of its quads' keys) is read from the
 // buffers, so that one text serves every tile.
-export interface SceneryFormat { side: number; halo: number; shift: number }
+// `eco`: the fine field thins the forest's edge (the section "the forest's edge" below); only the planet's windows ask for it, the island's own path is byte for byte as it was.
+export interface SceneryFormat { side: number; halo: number; shift: number; eco?: boolean }
 export const TILE_HALO = 2;
 export const ISLAND_SCENERY: SceneryFormat = { side: N, halo: 0, shift: 0 };
-export const tileScenery = (halo = TILE_HALO): SceneryFormat => ({ side: N + 2 * halo, halo, shift: 2 });
+export const tileScenery = (halo = TILE_HALO, eco = false): SceneryFormat => ({ side: N + 2 * halo, halo, shift: 2, eco });
 
 // ---------- the fields as the kernels read them ----------
 // i32, LEN each, then the tables the table kernel makes (NS fits, NS compensation points, cell-major), then the
@@ -75,7 +76,7 @@ export function layoutOf(fmt: SceneryFormat) {
   const take = (n: number) => { const a = at; at += n; return a; };
   const IDX = { cnt: take(4 * NQ), base: take(4 * NQ), oreCnt: take(NQ), oreBase: take(NQ), seed: take(1), flag: take(1), oreTotal: take(1), key: take(1), win: take(4), pad: take(8), tileN: take(T), start: take(T + 1), rowT: take(Q), rowC: take(Q), rowStart: take(Q + 1), ore: take(4 * ORE_CAP), words: 0 };
   IDX.words = at;
-  return { side, halo: fmt.halo, shift: fmt.shift, off, LEN, m, Q, NQ, MV, RMW, TAB_AT, COMP_AT, GRAD_AT, GEO_AT, ISLE_WORDS, IF, CUT_AT, FINE_AT, FINE_WORDS, FF, IDX };
+  return { side, halo: fmt.halo, shift: fmt.shift, eco: fmt.eco === true, off, LEN, m, Q, NQ, MV, RMW, TAB_AT, COMP_AT, GRAD_AT, GEO_AT, ISLE_WORDS, IF, CUT_AT, FINE_AT, FINE_WORDS, FF, IDX };
 }
 export type SceneryLayout = ReturnType<typeof layoutOf>;
 const ISL = layoutOf(ISLAND_SCENERY);
@@ -244,6 +245,22 @@ fn fbmQ(X: i32, Z: i32, d: u32, s: i32, octaves: u32) -> i32 {
   }
   return total;
 }
+${L.eco ? `// crd and fbmQ read right only while the coordinate's 2^12 d quarter metres cover it (rdiv64 takes a quotient under 2^32), which a place far from its face's corner is not at the small dividers: a window's
+// noise at 30 to 112 m lattices came out as one constant there. The lattice repeats every 2^12 lattice cells of the divider (the quotient is taken mod 2^32 in Q20), so the coordinate is reduced by that period first.
+fn crdE(X: i32, d: u32) -> i32 {
+  let m = mag(X) % (d << 12u);
+  let q = rdiv64(vec2u(m << 20u, m >> 12u), d);
+  return select(bitcast<i32>(q), -bitcast<i32>(q), X < 0i);
+}
+fn fbmE(X: i32, Z: i32, d: u32, s: i32, octaves: u32) -> i32 {
+  let cx = crdE(X, d); let cz = crdE(Z, d);
+  var total = 0i; var f = O24; var amp = O24 / 2i;
+  for (var o = 0u; o < octaves; o++) {
+    total += mq(noiseQ(qmw(cx, f), qmw(cz, f), s + faceKey() + i32(o) * 31i), amp);
+    f = mq(f, ${q24(2.03)}); amp = amp / 2i;
+  }
+  return total;
+}` : ""}
 `;
 
 // niche.ts curve in Q24 over any one scale: rising from nothing at a to its best at b, 1 to c, falling to nothing at d.
@@ -327,6 +344,101 @@ ${rect ? `  if (gid.x >= RECT[2] * RECT[3]) { return; }
 `;
 export const RASTER = rasterKernel();
 
+// ---------- the forest's edge ----------
+// The baked tree share is nearly binary (four in five of its rising edges go from under 4 to over 96 in 255 within one 75 m cell: growth.ts closes), so read bilinearly the forest's edge is the straight contour
+// between cell centres. A window's fine field (the format's `eco`) gives the edge a structure of its own, made of the cells and the face's own metres alone (the same at a vertex whichever window or tile holds it):
+// - Forest proximity: how much of the seed rain a place gets comes from forest, the cells' cover seen through a dispersal kernel. The kernel is the two-dimensional t of Clark et al. 1999, in the form Clark et al.
+//   2003 print it, f(r) = 1 / (pi u (1 + r^2 / u)^2), with u = 602 m2 for Acer rubrum, a wind-dispersed tree (mean distance pi sqrt(u) / 2 = 38 m, a fat tail: 0.7 percent of the seed lands past 200 m). The
+//   proximity is 1/2 at a straight margin, 1 deep in a wood and a fat tail outside; it is sampled at 40 points on five rings (14 to 225 m), each ring weighted by the kernel's mass in its annulus.
+// - Thinning: tree density rises from nothing at the margin to the interior's over the depth of edge influence, linearly (the working assumption of Harper et al. 2005), which they give as two to three canopy
+//   heights into the forest: 50 m for a 20 m canopy. A wood narrower than that never reaches its interior density, as a narrow strip is all edge.
+// - Outliers and clumps: past the margin the cover is the seed rain times the share of it that establishes on an open site, and it comes in clumps (sparse single trees and groups); the thinned zone's density
+//   comes in clumps too, and so do its stems (scatter's stemStands, below the quad: a quad's stems stand where the share between its vertices holds them, in groups). The place the cells are read at is moved
+//   by a displacement noise, so the margin leaves the lattice of cells and the share is read there in both directions: the margin moves outward as well as inward.
+// Far inside a wood and far outside it the tree share is the one the cells gave, to the bit.
+const ECO_DEI = 50; // m [Harper et al. 2005]
+const ECO_U = 602; // m2 [Clark et al. 2003, Clark et al. 1999]
+const ECO_KAPPA = 0.5; // [design] the share of the seed rain that stands as trees on an open site: the cells there are the ones where no stand closes (0.25 left the windows' mean share 5 to 8 percent under the cells', 0.5 with the edge clump 2.4 left 0.3 to 4)
+// [design] the displacement noise moves the place the cells are read at, in two scales: a gain of 800 m over a lattice of 300 m (two octaves, 300 and 150 m) and of 200 m over one of 112 m (three octaves), the
+// sum held to 400 m: a straight margin of the cells wanders by a hundred metres or more over a few hundred (a stand's edge is a rough line at every scale between a stem and a hillside, and a contour of a
+// domain-warped field is that when the gain is about the lattice's size; the noises' own range is 0.15 typically, 0.75 at most). Measured on stems (scripts/play/audit/perf/edgestat.ts), the share of a
+// margin that stays straight within 5 m over 75 m fell from 0.30 to 0.07 and within 20 m over 300 m from 0.13 to 0.01 (a gain of 400 m and a 200 m cap left 0.085 and 0.014)
+const ECO_WARP_COARSE_M = 800, ECO_WARP_FINE_M = 200, ECO_WARP_M = 400;
+const ECO_STEM_CLUMP = 0.5, ECO_STEM_NOISE = 4, ECO_STEM_CLUMP_M = 24; // [design] the stems' clump: the most it moves a stem's chance (of 1), the gain of the noise (its typical range is 0.15, clipped at 1) and its lattice in metres
+const ECO_EDGE_CLUMP = 2.4, ECO_TAIL_CLUMP = 2.4, ECO_TAIL_MAX = 3.4; // [design] the clump noises' strength (1 + b n, n of a noise 1.4 scaled gradient noise) and the most a clump holds of the mean
+const ECO_WOOD = 0.7; // [design] the tree share from which a stand counts as closed: the bake's woods read 0.65 to 0.85 inside (growth.ts closes), and below it the stems clump
+const ECO_R = [3, 6, 12, 24, 48]; // ring radii in sixteenths of a cell: 14, 28, 56, 112, 225 m
+const ECO_WARP = Math.round((ECO_WARP_M * 16) / CELL); // sixteenths of a cell
+const ECO_REACH = 48 + ECO_WARP + 8; // the farthest a read goes from a vertex, in sixteenths of a cell (the ring, the displacement, a vertex half a cell from the first centre)
+export const ECO_HALO = Math.ceil(ECO_REACH / 16) + 1; // the cells a window or a tile must hold past its edge for the same vertex whichever holds it
+const ecoCdf = (r: number) => 1 - 1 / (1 + (r * r) / ECO_U); // the share of seeds landing within r m
+const ecoBound = (k: number) => Math.sqrt(ECO_R[k] * ECO_R[k + 1]) * (CELL / 16); // a ring's annulus ends halfway between rings, by the geometric mean
+// the weight of each of a ring's 8 points in 1/4096 (the points of the five rings together carry the whole kernel)
+const ECO_W = ECO_R.map((_, k) => Math.round(((k < 4 ? ecoCdf(ecoBound(k)) : 1) - (k ? ecoCdf(ecoBound(k - 1)) : 0)) * 4096 / 8));
+// the proximity's value one depth of edge influence inside a straight margin: 1 less the kernel's share of seed landing across a line DEI away (the half plane's marginal of the kernel)
+const ECO_INSIDE = 1 - 0.5 * (1 - (ECO_DEI / Math.sqrt(ECO_U)) / Math.sqrt(1 + (ECO_DEI * ECO_DEI) / ECO_U));
+const ECO_COS = Array.from({ length: 16 }, (_, d) => Math.round(64 * Math.cos((d * Math.PI) / 8)));
+const ECO_SIN = Array.from({ length: 16 }, (_, d) => Math.round(64 * Math.sin((d * Math.PI) / 8)));
+
+const ecoWGSL = (L: SceneryLayout) => {
+  const A = (xs: number[]) => `array<i32, ${xs.length}>(${xs.map((x) => `${x}i`).join(", ")})`;
+  return /* wgsl */ `
+const ECO_R = ${A(ECO_R)};
+const ECO_W = ${A(ECO_W)};
+const ECO_COS = ${A(ECO_COS)};
+const ECO_SIN = ${A(ECO_SIN)};
+// a field's bilinear read at a place in sixteenths of a cell from the first cell's centre, Q of the field
+fn eAt(f: u32, px: i32, py: i32) -> i32 {
+  let cx = px >> 4u; let cy = py >> 4u; let fx = px & 15i; let fy = py & 15i;
+  let top = (16i - fx) * cell(f, cx, cy) + fx * cell(f, cx + 1i, cy);
+  let bot = (16i - fx) * cell(f, cx, cy + 1i) + fx * cell(f, cx + 1i, cy + 1i);
+  return ((16i - fy) * (top >> 4u) + fy * (bot >> 4u) + 8i) >> 4u;
+}
+// the tree share (Q24) of a vertex whose cells gave t0, and the place (sixteenths) of the least wooded point near it, for the cover the thinned trees leave
+struct Eco { t: i32, sx: i32, sy: i32 }
+fn ecotone(X: i32, Z: i32, px: i32, py: i32, t0: i32, m0: i32) -> Eco {
+  let wx = clamp((${Math.round((ECO_WARP_COARSE_M * 16) / CELL)}i * fbmE(X, Z, 1200u, 71i, 2u) + ${Math.round((ECO_WARP_FINE_M * 16) / CELL)}i * fbmE(X, Z, 450u, 75i, 3u) + 8388608i) >> 24u, -${ECO_WARP}i, ${ECO_WARP}i);
+  let wy = clamp((${Math.round((ECO_WARP_COARSE_M * 16) / CELL)}i * fbmE(X, Z, 1200u, 72i, 2u) + ${Math.round((ECO_WARP_FINE_M * 16) / CELL)}i * fbmE(X, Z, 450u, 76i, 3u) + 8388608i) >> 24u, -${ECO_WARP}i, ${ECO_WARP}i);
+  let bx = px + wx; let by = py + wy;
+  var a: array<i32, 41>;
+  a[0] = eAt(${L.IF.tree}u, bx, by);
+  var top = a[0]; var low = a[0]; var lx = bx; var ly = by;
+  for (var r = 0u; r < 5u; r++) {
+    for (var k = 0u; k < 8u; k++) {
+      let d = 2u * k + (r & 1u);
+      let qx = bx + ((ECO_R[r] * ECO_COS[d] + 32i) >> 6u); let qy = by + ((ECO_R[r] * ECO_SIN[d] + 32i) >> 6u);
+      let v = eAt(${L.IF.tree}u, qx, qy);
+      a[1u + 8u * r + k] = v;
+      if (r < 3u) { top = max(top, v); if (v < low) { low = v; lx = qx; ly = qy; } }
+    }
+  }
+  // the seed rain forest gives (sAbs) and, against the woods' own level here (the most the near points hold), how much of the kernel lies in wood (sRel)
+  var sAbs = 0i; var sRel = 0i;
+  for (var r = 0u; r < 5u; r++) {
+    for (var k = 0u; k < 8u; k++) {
+      let v = a[1u + 8u * r + k];
+      sAbs += (v >> 6u) * ECO_W[r]; sRel += (min(v, top) >> 6u) * ECO_W[r];
+    }
+  }
+  sAbs = sAbs >> 6u; sRel = sRel >> 6u;
+  var nu = 0i;
+  if (top >= ${q24(1 / 64)}) { nu = clamp(qd(qd(sRel, top, 24u) - ${q24(0.5)}, ${q24(ECO_INSIDE - 0.5)}, 24u), 0i, O24); }
+  var c1 = O24;
+  let wedge = 4i * mq(nu, O24 - nu);
+  if (wedge > 0i) { c1 = max(0i, O24 + mq(mq(${q24(ECO_EDGE_CLUMP)}, fbmE(X, Z, 360u, 73i, 2u)), wedge)); }
+  var tail = 0i;
+  if (nu < O24 && sAbs > 0i) { tail = mq(mq(${q24(ECO_KAPPA)}, sAbs), clamp(O24 + mq(${q24(ECO_TAIL_CLUMP)}, fbmE(X, Z, 240u, 74i, 2u)), 0i, ${q24(ECO_TAIL_MAX)})); }
+  // the density the thinning scales: the cells' own inside the wood, the wood's level at the margin (the cells' own there is the unmoved margin's ramp). Where the density read at the displaced place (the
+  // cells' read with the same covers' wander m0) is far from the vertex's own, the vertex takes the displaced one: the displacement moves the margin outward as well as inward (past 0.3 of the larger, over 0.4 more)
+  let td = mq(a[0], m0);
+  let rel = select(0i, qd(abs(td - t0), max(td, t0), 24u), max(td, t0) > 0i);
+  let t0e = t0 + mq(clamp(qd(rel - ${q24(0.3)}, ${q24(0.4)}, 24u), 0i, O24), td - t0);
+  let lev = t0e + mq(O24 - nu, max(0i, top - t0e));
+  return Eco(min(O24, mq(nu, mq(lev, c1)) + mq(O24 - nu, tail)), lx, ly);
+}
+`;
+};
+
 // ---------- the fine field ----------
 // One thread a vertex of the 1,021 x 1,021 lattice (a quarter of a cell apart): the cubic through the generator's cells
 // (Catmull-Rom at quarter steps, in two passes with the sums scaled so no step overflows), the ground swell, the stream's
@@ -355,6 +467,7 @@ fn blin(f: u32, cx: i32, cy: i32, jx: i32, jy: i32) -> i32 {
   return ((4i - jy) * top + jy * bot + 8i) >> 4u;
 }
 fn maskByte(tx: u32, ty: u32, plane: u32) -> u32 { let t = ty * RM + tx; return (bitcast<u32>(FINE[plane + (t >> 2u)]) >> ((t & 3u) * 8u)) & 255u; }
+${L.eco ? ecoWGSL(L) : ""}
 
 @compute @workgroup_size(256)
 fn fine(@builtin(global_invocation_id) gid: vec3u) {
@@ -399,9 +512,30 @@ ${rect ? `  if (gid.x >= RECT[2] * RECT[3]) { return; }
     share[c] = max(0i, mq(b, O24 + mq(${q24(0.85)}, fbmQ(X, Z, 600u, 40i + i32(c), 2u))));
     sum += share[c];
   }
-  for (var c = 0u; c < 6u; c++) {
-    FINE[${FF.tree}u + c * MV + n] = select(share[c], qd(share[c], sum, 24u), sum > 0i);
+${L.eco ? `  var out: array<i32, 6>;
+  for (var c = 0u; c < 6u; c++) { out[c] = select(share[c], qd(share[c], sum, 24u), sum > 0i); }
+  let e = ecotone(X, Z, 4i * pu, 4i * pv, out[0], O24 + mq(${q24(0.85)}, fbmQ(X, Z, 600u, 40i, 2u)));
+  if (e.t != out[0]) {
+    if (e.t < out[0]) {
+      // thinned trees leave their share to the covers of the least wooded point near (grass where it holds none)
+      var comp: array<i32, 6>; var cs = 0i;
+      for (var c = 1u; c < 6u; c++) { comp[c] = max(0i, eAt(${IF.tree}u + c * LEN, e.sx, e.sy)); cs += comp[c]; }
+      let freed = out[0] - e.t;
+      for (var c = 1u; c < 6u; c++) { out[c] += select(select(0i, freed, c == 2u), mq(freed, qd(comp[c], cs, 24u)), cs > 0i); }
+    } else {
+      // more trees take their share from the covers in proportion
+      let s = qd(O24 - e.t, O24 - out[0], 24u);
+      for (var c = 1u; c < 6u; c++) { out[c] = mq(out[c], s); }
+    }
+    // the rounding's remainder goes to the largest cover other than trees, so the shares still sum to 1
+    var tot = e.t; var big = 2u;
+    for (var c = 1u; c < 6u; c++) { tot += out[c]; if (out[c] > out[big]) { big = c; } }
+    out[big] += O24 - tot;
+    out[0] = e.t;
   }
+  for (var c = 0u; c < 6u; c++) { FINE[${FF.tree}u + c * MV + n] = out[c]; }` : `  for (var c = 0u; c < 6u; c++) {
+    FINE[${FF.tree}u + c * MV + n] = select(share[c], qd(share[c], sum, 24u), sum > 0i);
+  }`}
 }
 `;
 };
@@ -527,6 +661,8 @@ var<private> Qloc: array<u32, 4>;
 var<private> Qdst: array<u32, 4>;
 var<private> Qore: u32;
 var<private> QoreAt: u32;
+var<private> Qsmax: i32;
+var<private> Qgain: i32;
 var<private> FT: array<i32, ${NS}>;
 var<private> CP: array<i32, ${NS}>;
 var<private> WT: array<i32, 5>;
@@ -752,6 +888,27 @@ fn bestW(n: u32) -> i32 { var b = 0i; for (var k = 0u; k < n; k++) { b = max(b, 
 // floor(x + u) for x in Q24 and a word u
 fn stoch(x: i32, r: u32) -> u32 { return u32((max(x, 0i) + i32(r >> 8u)) >> 24u); }
 
+${L.eco ? `// A stem stands with the chance of the tree share where it would stand (the fine field between its vertices, not the quad's one value) over the densest corner of its quad, which the quad's room was
+// counted for, times its clump: so the margin follows the share's contour through the quad rather than the quad's own edges, and the stems of a thinned or sparse stand come in groups (sub-cell clumping:
+// ${ECO_STEM_CLUMP_M} m lattice, over two octaves, in strength by how far the share is under a closed stand's ${ECO_WOOD}: a closed stand and the open ground far from it are not clumped). The clump is
+// 1 +- ${ECO_STEM_CLUMP} w at most (w 0 to 1) and the quad's room is drawn for its top, 1 + ${ECO_STEM_CLUMP} w of the quad's corners, with every stem's chance over that, so the stems the quad holds are the
+// share's mean whatever the clump (a chance cut off at 1 would lose a clump's upper half).
+fn stemW(s: i32) -> i32 {
+  let sd = clamp(qd(s, ${q24(ECO_WOOD)}, 24u), 0i, O24);
+  let e = 4i * mq(sd, O24 - sd);
+  return mq(e, e);
+}
+fn stemStands(FU: i32, FV: i32, fx: u32, fz: u32, r: u32) -> bool {
+  if (Qsmax <= 0i) { return false; }
+  let s = lerpFine(${L.FF.tree}u, FU, FV);
+  let rr = clamp(qd(s, Qsmax, 24u), 0i, O24);
+  let X = gx(Qu) + ((75i * i32(fx)) >> 16u); let Z = gz(Qv) + ((75i * i32(fz)) >> 16u);
+  let t = clamp(mq(${q24(ECO_STEM_NOISE)}, fbmE(X, Z, ${4 * ECO_STEM_CLUMP_M}u, 77i, 2u)), -O24, O24);
+  let clump = O24 + mq(mq(${q24(ECO_STEM_CLUMP)}, stemW(s)), t);
+  let p = qd(mq(rr, clump), Qgain, 24u);
+  return i32(r >> 8u) < p;
+}
+` : ""}
 // Stems, as many as their crowns fill the room (flora.ts lay): each one's kind drawn by its weight, its height drawn,
 // and the ground its crown holds added up until it reaches the room, the last laid with the chance of the room left.
 fn lay(stream: u32, tree: bool, first: u32, n: u32, room: i32, most: i32) {
@@ -773,7 +930,11 @@ fn lay(stream: u32, tree: bool, first: u32, n: u32, room: i32, most: i32) {
     let pos = next32(); let sd = next32();
     let fx = pos & 0xffffu; let fz = pos >> 16u;
     let FU = i32(Qu << 16u) + i32(fx); let FV = i32(Qv << 16u) + i32(fz);
-    if (dryAt(FU, FV) && (!tree || soilAt(FU, FV))) { put(select(${FLORA_KIND.bush}u, ${FLORA_KIND.tree}u, tree), PL_SPECIES[p], fx, fz, mm * 1000u, sd); }
+${L.eco ? `    var keep = true;
+    if (tree) { keep = stemStands(FU, FV, fx, fz, next32()); }
+    if (keep && dryAt(FU, FV) && (!tree || soilAt(FU, FV))) {` : `    if (dryAt(FU, FV) && (!tree || soilAt(FU, FV))) {`}
+      put(select(${FLORA_KIND.bush}u, ${FLORA_KIND.tree}u, tree), PL_SPECIES[p], fx, fz, mm * 1000u, sd);
+    }
     if (last) { return; }
   }
 }
@@ -856,12 +1017,15 @@ fn scatterQuad(q: u32) {
   if (wk > 4i || h < ${Qn(0.8, 16)}i) { return; }
   fitsAt();
   let under = O24 - tree + mq(tree, ${q24(UNDER_CROWN)});
+${L.eco ? `  let c10 = FINE[${L.FF.tree}u + i + 1u]; let c01 = FINE[${L.FF.tree}u + i + MW]; let c11 = FINE[${L.FF.tree}u + i + MW + 1u];
+  Qsmax = max(max(tree, c10), max(c01, c11));
+  Qgain = O24 + mq(${q24(ECO_STEM_CLUMP)}, max(max(stemW(tree), stemW(c10)), max(stemW(c01), stemW(c11))));` : ""}
   let open = O24 - min(shrub, ${q24(SHRUB_MOST)});
   // trees in the open sky, then bushes under the trees
   for (var form = 0u; form < 2u; form++) {
     let isTree = form == 0u;
     layerW(select(${SHRUB_AT}u, ${TREE_AT}u, isTree), select(${SHRUBS.length}u, ${TREES.length}u, isTree), select(under, O24, isTree));
-    let room = select(qm(-qln((open + 128i) >> 8u), ${Qn(STEP * STEP, 16)}i, 16u), qm(tree, ${Qn(STEP * STEP, 16)}i, 24u), isTree);
+    let room = select(qm(-qln((open + 128i) >> 8u), ${Qn(STEP * STEP, 16)}i, 16u), qm(${L.eco ? "mq(Qsmax, Qgain)" : "tree"}, ${Qn(STEP * STEP, 16)}i, 24u), isTree);
     lay(select(${STREAMS.bush}u, ${STREAMS.tree}u, isTree), isTree, select(${SHRUB_AT}u, ${TREE_AT}u, isTree), select(${SHRUBS.length}u, ${TREES.length}u, isTree), room, select(0x7fffffffi, ${Qn(STEP * STEP, 16)}i, isTree));
   }
   let edge2 = 4i * mq(tree, O24 - tree);

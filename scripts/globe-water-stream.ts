@@ -1,5 +1,5 @@
 // The planet's discharge and lakes out of core (src/gpu/globe/discharge-stream.ts, basin-stream.ts): the same files as `scripts/globe-water.ts --stage discharge|basin` makes in memory, made a
-// block of tiles at a time, in calls of at most --budget seconds, into /tmp/planet-75m/<seed>-<planet key>/ (or --dir): run each stage again until it says done. No GPU is used.
+// block of tiles at a time, in calls of at most --budget seconds, into the bake directory (bakedir.ts BAKE, default ~/.cache/nomads-bakes), in <seed>-<planet key>/ (or --dir): run each stage again until it says done. No GPU is used.
 //   bun scripts/globe-water-stream.ts --stage discharge --tier 5 --key 883a8d9387df --block 4 --budget 250     # needs t5-to.u32 and t5-vs0..3.u32
 //   bun scripts/globe-water-stream.ts --stage basin --tier 5 --key 883a8d9387df                               # needs t5-height, -flooded, -lakenet, -to and the discharge's t5-q0..3
 //   --block 2 --reverse   another tiling and the blocks in reverse order (the bytes do not change)

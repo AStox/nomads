@@ -1,4 +1,4 @@
-// Bakes the planet's tile pyramid (src/gpu/globe/pyramid.ts, format in bake.ts PYRAMID_FIELDS) from the fields the stages wrote into /tmp/planet-75m/<seed>-<planet key>/; every word is
+// Bakes the planet's tile pyramid (src/gpu/globe/pyramid.ts, format in bake.ts PYRAMID_FIELDS) from the fields the stages wrote into the bake directory (bakedir.ts BAKE, default ~/.cache/nomads-bakes), in <seed>-<planet key>/; every word is
 // converted to the pyramid's integer here. A field whose files are missing is left out of the pyramid and named in pyramid.json `missing`. Tiers 0 to --tier (default PLANET_TIER) are made, the
 // top one from the stage files' tier. Calls of at most --budget seconds (default 240): run it again until it says done; finished units are kept.
 //   bun scripts/globe-pyramid.ts --seed 1 --key c418e5fe9b5e [--tier 5] [--faces 1,4] [--budget 240] [--out <dir>]

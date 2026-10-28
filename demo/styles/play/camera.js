@@ -1,7 +1,7 @@
 // The play camera: { x, z, zoom, bearing, up } in world meters, moved only through the renderer's exact projection.
 import { SIZE } from "../island.js";
 
-const TURN_MS = 380, SETTLE_MS = 220, ZOOM_TAU = 90, FOLLOW_TAU = 60, BOUND = SIZE / 2 - 100, UP_MAX = 2000;
+const TURN_MS = 380, SETTLE_MS = 220, ZOOM_TAU = 90, FOLLOW_TAU = 60, REST_MS = 6000, QUIET_MS = 500, BOUND = SIZE / 2 - 100, UP_MAX = 2000;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t));
 export const norm8 = (b) => { const r = ((b % 8) + 8) % 8; return r >= 8 ? 0 : r; };
@@ -14,9 +14,9 @@ export function createCamera({ live, view, canvas, onTurn }) {
   let goal = view.zoom, zoomSet = view.zoom, anchor = null, tried = null, turn = null, pinch = null, grab = null, good = snapshot();
   function snapshot() { return { x: view.x, z: view.z, zoom: view.zoom, bearing: view.bearing, up: view.up }; }
   const half = () => [canvas.width / 2, canvas.height / 2];
-  // move the target so world point A shows at canvas point (sx, sy) in state st; false, and nothing moved, if it cannot
-  function hold(A, sx, sy, st = view) {
-    const [cx, cy] = half(), T = live.solveTarget(st, A.x, A.z, A.y, sx - cx, sy - cy, A.geo);
+  // move the target so world point A shows at canvas point (sx, sy) in state st; false, and nothing moved, if it cannot (a drag's, `edge`, holds the nearest edge of a planet the cursor is off)
+  function hold(A, sx, sy, st = view, edge = false) {
+    const [cx, cy] = half(), T = live.solveTarget(st, A.x, A.z, A.y, sx - cx, sy - cy, A.geo, edge);
     if (!T || !finite(T.x, T.z)) return false;
     live.setTarget(view, T);
     return true;
@@ -25,13 +25,15 @@ export function createCamera({ live, view, canvas, onTurn }) {
   const cam = {
     get goal() { return goal; },
     get turning() { return !!turn; },
+    get holding() { return !!anchor; },
+    get anchorDiag() { return anchor ? { A: anchor.A, at: anchor.at } : null; },
     // the drawn ground under the cursor is picked once per gesture (where the cursor stands, until it moves), which ends when the zoom settles; a cursor off the planet finds nothing then and the whole gesture zooms about the
     // centre: picking again as the growing planet reaches the cursor would hold a limb point there and swing the planet by hundreds of km
     zoomTo(g, sx, sy) {
       if (!Number.isFinite(g)) return;
       goal = clamp(g, live.zmin, live.zmax);
       if (sx == null) { anchor = null; tried = null; return; }
-      if (anchor ? Math.hypot(sx - anchor.at[0], sy - anchor.at[1]) <= 2 : tried && Math.hypot(sx - tried[0], sy - tried[1]) <= 2) return;
+      if (anchor ? Math.hypot(sx - anchor.at[0], sy - anchor.at[1]) <= 2 : tried && Math.hypot(sx - tried[0], sy - tried[1]) <= 2) { if (anchor) anchor.rest = null; return; }
       tried = [sx, sy];
       const A = live.groundUnder(view, sx, sy);
       if (A && finite(A.x, A.z, A.y)) anchor = { A, at: [sx, sy] };
@@ -52,7 +54,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
       if (!finite(dx, dy) || (!dx && !dy && !view.up)) return;
       // the target's place on the planet is view.geo: its plane coordinates (about the play area) say nothing of a place past a quarter of the planet from it
       const A = { x: view.x, z: view.z, y: live.camH(view.x, view.z) + view.up, geo: view.geo }, [cx, cy] = half();
-      if (!hold(A, cx + dx, cy + dy, { ...view, up: 0 })) return;
+      if (!hold(A, cx + dx, cy + dy, { ...view, up: 0 }, true)) return;
       view.up = 0;
     },
     // A drag holds the ground picked where the button went down under the cursor, not the target: the target is held where it stands and the ground away from it (the cursor's, at a tilt, on a sphere, through the
@@ -71,8 +73,13 @@ export function createCamera({ live, view, canvas, onTurn }) {
     grabEnd() { grab = null; },
     // the grabbed ground (or a zoom's) under the cursor again: every frame, and when the renderer's ground changes frames (another window may lay its cells at an angle to the last one's, which turns the picture about the target)
     regrab() {
-      if (grab?.A && grab.on) { if (hold(grab.A, ...grab.at, { ...view, up: 0 })) view.up = 0; }
-      else if (anchor && !hold(anchor.A, ...anchor.at, view)) anchor = null;
+      if (grab?.A && grab.on) { if (hold(grab.A, ...grab.at, { ...view, up: 0 }, true)) view.up = 0; }
+      else if (anchor) {
+        // the ground under the cursor is held at the height of the surface drawn there now, not the one it was picked at: the tiers arriving and a window's ground change that height under a zoom
+        const y = live.surfaceY(view, anchor.A);
+        if (Number.isFinite(y)) { if (Math.abs(y - anchor.A.y) > 0.05) anchor.changed = performance.now(); anchor.A = { ...anchor.A, y }; }
+        if (!hold(anchor.A, ...anchor.at, view)) anchor = null;
+      }
     },
     // a turn ends a zoom gesture: its anchor would drag the target round with it
     orbitBy(db) { if (Number.isFinite(db) && db) { view.bearing = norm8(view.bearing + db); anchor = null; } },
@@ -125,14 +132,19 @@ export function createCamera({ live, view, canvas, onTurn }) {
       turnStep(dt, now);
       if ((grab?.A && grab.on) || anchor) live.tickLattice(view);
       cam.regrab();
-      if (view.zoom === goal) { anchor = null; tried = null; return; }
+      if (view.zoom === goal) {
+        // the zoom is over, the held ground is not: the cells' lattice, a window, the planet's tiles and the ladder's chunks go on changing the picture about the target, so the cursor keeps its ground until they stop
+        if (anchor) { anchor.rest ??= now; if (now - anchor.rest > REST_MS || (!live.moving(view) && performance.now() - (anchor.changed ?? 0) > QUIET_MS)) anchor = null; }
+        if (!anchor) tried = null;
+        live.setProbe(anchor?.A.geo);
+        return;
+      }
       let z = view.zoom + (goal - view.zoom) * (1 - Math.exp(-dt / ZOOM_TAU));
       if (Math.abs(goal - z) < 1e-4) z = goal;
-      if (anchor) {
-        if (!hold(anchor.A, ...anchor.at, { ...view, zoom: z })) anchor = null;
-      }
+      if (anchor && !hold(anchor.A, ...anchor.at, { ...view, zoom: z })) anchor = null;
       view.zoom = zoomSet = z;
-      if (z === goal) { anchor = null; tried = null; }
+      if (z === goal && !anchor) tried = null;
+      live.setProbe(anchor?.A.geo);
     },
     // No NaN or Infinity survives a frame: the last good state comes back. Then everything is clamped to the island.
     guard() {

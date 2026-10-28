@@ -1,20 +1,21 @@
-// What the ground stage's and the scatter's tests on the real planet stand on: a scratch bake (/tmp/planet-75m/ground-scratch/bake) whose heights and terrain files are links to the real
+// What the ground stage's and the scatter's tests on the real planet stand on: a scratch bake (the bake directory's ground-scratch/bake) whose heights and terrain files are links to the real
 // bake's, and in which the air stage's files, a stand-in for the water stage's and the ground stage's own are made for the tiles a test asks for. The stand-in water is a function of each
 // cell's height and discharge area, not the water stage's: channels where a cell drains 20,000 cells or more, a floodplain within 24 cells of one on ground under 800 m, a power that
 // falls with the area, a water table deep where the area is small, a mean flow of 7.9 l/s a km2 of area (BANKFULL's own), and standing water where the tier's flood stands over the ground
 // (a lake) or the cell is sea. A test that reads the water stage's own files uses the bake when they are in it.
+import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { theGpu } from "../device";
 import { airStage } from "./air";
-import { BakeDir } from "./bakedir";
+import { BAKE, BakeDir, PLANET_STORE } from "./bakedir";
 import { GROUND_HALO, TABLE_UNIT, groundStage, mappedField } from "./ground";
 import { patchOf, tileAt } from "./patch";
 import { doneFileOf, runTiles, type Ctx, type Field, type TileStage } from "./stages";
 import { readPlanet, type Planet } from "./window";
 import { diskStore } from "../../../scripts/globe-window";
 
-export const KEY = "883a8d9387df", BAKE = `/tmp/planet-75m/1-${KEY}`, STOREDIR = "/tmp/planet-small/store", SCRATCH = "/tmp/planet-75m/ground-scratch/bake", TIER = 4, FN = 4096;
-export const REAL = existsSync(`${BAKE}/t4-height.i32`) && existsSync(`${BAKE}/t4-acc.u32`) && existsSync(`${STOREDIR}/1-${KEY}`);
+export const KEY = "883a8d9387df", REALDIR = join(BAKE, `1-${KEY}`), STOREDIR = PLANET_STORE, SCRATCH = join(BAKE, "ground-scratch", "bake"), TIER = 4, FN = 4096;
+export const REAL = existsSync(`${REALDIR}/t4-height.i32`) && existsSync(`${REALDIR}/t4-acc.u32`) && existsSync(`${STOREDIR}/1-${KEY}`);
 
 // The tiles whose cells a patch of the given tiles covers.
 export function tilesCovering(tiles: number[], halo: number): number[] {
@@ -56,9 +57,9 @@ let planet: Planet | null = null;
 // halo) the air stage's and the stand-in water's. `ground` false makes the air and the water only.
 export async function scratchBake(tiles: number[], halo: number, ground = true): Promise<Ctx> {
   mkdirSync(SCRATCH, { recursive: true });
-  for (const f of ["t4-height.i32", "t4-flooded.i32", "t4-rock.u8", "t4-drift.u8", "t4-dd.u16", "t4-to.u32", "t4-acc.u32"]) if (!existsSync(`${SCRATCH}/${f}`)) symlinkSync(`${BAKE}/${f}`, `${SCRATCH}/${f}`);
+  for (const f of ["t4-height.i32", "t4-flooded.i32", "t4-rock.u8", "t4-drift.u8", "t4-dd.u16", "t4-to.u32", "t4-acc.u32"]) if (!existsSync(`${SCRATCH}/${f}`)) symlinkSync(`${REALDIR}/${f}`, `${SCRATCH}/${f}`);
   // what was made in the scratch bake belongs to the heights it was made from: the real bake's change when the tiers are baked again, and then every stage's tiles are made again
-  const stamp = String(statSync(`${BAKE}/t4-height.i32`).mtimeMs), stampFile = `${SCRATCH}/from.txt`;
+  const stamp = String(statSync(`${REALDIR}/t4-height.i32`).mtimeMs), stampFile = `${SCRATCH}/from.txt`;
   if (!existsSync(stampFile) || readFileSync(stampFile, "utf8") !== stamp) {
     for (const f of ["air", "synwater-4", "ground"]) { rmSync(`${SCRATCH}/${f}-done.u8`, { force: true }); rmSync(`${SCRATCH}/${doneFileOf(TIER, f)}`, { force: true }); }
     writeFileSync(stampFile, stamp);

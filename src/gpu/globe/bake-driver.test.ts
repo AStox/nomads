@@ -1,4 +1,4 @@
-// The bake driver (scripts/globe-bake-driver.ts) on FAKE stages (bake-driver-fixture/fake-stage.ts: a few 'tiles', a sleep, can be killed and made to fail) in a scratch bake dir under /tmp/planet-75m,
+// The bake driver (scripts/globe-bake-driver.ts) on FAKE stages (bake-driver-fixture/fake-stage.ts: a few 'tiles', a sleep, can be killed and made to fail) in a scratch bake dir under the bake directory (bakedir.ts BAKE),
 // and the real stage table's own invariants, read against the real tier-4 bake of key 883a8d9387df where it is there (read-only). No GPU and no real stage runs. Each case alone:
 //   bun test ./src/gpu/globe/bake-driver.test.ts -t "<name>" --timeout 120000
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
@@ -7,11 +7,12 @@ import type { Subprocess } from "bun";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { spawnSync } from "node:child_process";
+import { BAKE } from "./bakedir";
 import { PLANET_TIER } from "./grid";
 import { doneFileOf } from "./stages";
 import { COARSE_TIER, PLANET_STAGES, PLANET_STORE, STREAM_TIER, acquireLock, alive, cellsOf, evaluate, expand, fromLog, loadStages, markerOf, measure, parseOpts, realStages, signature, takesTier, type Cfg, type Stage } from "../../../scripts/globe-bake-driver";
 
-const SCRATCH = "/tmp/planet-75m/bakedriver-scratch", SCRIPT = join(import.meta.dir, "../../../scripts/globe-bake-driver.ts"), FIX = join(import.meta.dir, "bake-driver-fixture/fake-stage.ts");
+const SCRATCH = join(BAKE, "bakedriver-scratch"), SCRIPT = join(import.meta.dir, "../../../scripts/globe-bake-driver.ts"), FIX = join(import.meta.dir, "bake-driver-fixture/fake-stage.ts");
 mkdirSync(SCRATCH, { recursive: true });
 afterAll(() => rmSync(SCRATCH, { recursive: true, force: true }));
 const procs: { kill: (s?: number | NodeJS.Signals) => void }[] = [];
@@ -330,7 +331,7 @@ describe("the pieces", () => {
   });
 
   test("the planet store's path and records are the scripts'", () => {
-    expect(readFileSync(join(import.meta.dir, "../../../scripts/globe-planet.ts"), "utf8")).toContain(`export const STORE = "${PLANET_STORE}";`);
+    expect(readFileSync(join(import.meta.dir, "../../../scripts/globe-planet.ts"), "utf8")).toContain("export const STORE = PLANET_STORE;");
     const window = readFileSync(join(import.meta.dir, "window.ts"), "utf8");
     expect(window).toContain('export const STAGES = ["chain", "climate0", "ice", "climate1"]');
     for (const n of PLANET_STAGES) expect(window).toContain(`get("${n}")`);
@@ -356,7 +357,7 @@ describe("the pieces", () => {
   });
 });
 
-const KEY = "883a8d9387df", REAL = `/tmp/planet-75m/1-${KEY}`;
+const KEY = "883a8d9387df", REAL = join(BAKE, `1-${KEY}`);
 const cfgOf = (tier: number): Cfg => ({ seed: 1, key: KEY, tier, budget: 240, dir: REAL, lock: "/tmp/nomads-gpu.lock" });
 const T3 = ["t3-flow", "t3-pool", "t3-surplus", "t3-discharge", "t3-basin", "coarse"];
 

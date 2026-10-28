@@ -2,8 +2,8 @@
 // basins are large and cross tile edges, face edges and cube corners; random weights; hollows as smooth blobs; and the hash and the word-for-word sample of a file against another.
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readSync, rmSync, symlinkSync } from "node:fs";
-import { basename, dirname } from "node:path";
-import { BakeDir } from "./bakedir";
+import { basename, dirname, join } from "node:path";
+import { BAKE, BakeDir } from "./bakedir";
 import { gatherTwin } from "./discharge";
 import { FACES, centre, tierGrid } from "./grid";
 import { cellAcross } from "./patch";
@@ -79,7 +79,7 @@ export function sha(path: string): string {
 export const sampleOf = (n: number, count = 4000): number[] => Array.from({ length: count }, (_, k) => hashOf32(k, 31) % n);
 
 // ---------- the real tier 4 of planet 883a8d9387df (the in-memory results are the oracle) ----------
-export const REAL = "/tmp/planet-75m/1-883a8d9387df", SCRATCH = "/tmp/planet-75m/stream-water-scratch";
+export const REAL = join(BAKE, "1-883a8d9387df"), SCRATCH = join(BAKE, "stream-water-scratch");
 export const haveReal = () => ["t4-to.u32", "t4-q0-hi.u16", "t4-cells.u32", "t4-basin.u8", "t4-lakenet.i32"].every((f) => existsSync(`${REAL}/${f}`));
 // The weights the in-memory discharge was made of, found by taking from every cell's sum the sums of the cells that drain into it (the forest's inverse, exact in doubles): the weight files were
 // spent. Throws where a result is not a u32 (it would not be a discharge of weights).

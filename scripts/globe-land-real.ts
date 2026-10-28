@@ -1,11 +1,13 @@
 // A window of the real bake's tier 5 heights read from the file (no GPU), drawn and measured as the fine tiers' defects are judged: the second difference of the heights by the cell's place in the
 // 32-cell block (a constant to a tier-0 cell shows at its edges), the share of cells in flat squares of a block, and the diagonal streak measure.
-//   bun scripts/globe-land-real.ts --dir /tmp/planet-75m/1-7f6ff6c82cdd --face 0 --x 7680 --y 4352 --size 256 --out /tmp/planet-75m/land/view/real574.png
+//   bun scripts/globe-land-real.ts --dir $HOME/.cache/nomads-bakes/1-7f6ff6c82cdd --face 0 --x 7680 --y 4352 --size 256 --out $HOME/.cache/nomads-bakes/land/view/real574.png
 import { closeSync, openSync, readSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { BAKE } from "../src/gpu/globe/bakedir";
 import { renderLand } from "./globe-land-metrics";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
-const FN = 8192, dir = arg("dir", "/tmp/planet-75m/1-7f6ff6c82cdd"), face = Number(arg("face", "0")), x0 = Number(arg("x", "7680")), y0 = Number(arg("y", "4352")), size = Number(arg("size", "256")), pad = 4;
+const FN = 8192, dir = arg("dir", join(BAKE, "1-7f6ff6c82cdd")), face = Number(arg("face", "0")), x0 = Number(arg("x", "7680")), y0 = Number(arg("y", "4352")), size = Number(arg("size", "256")), pad = 4;
 const file = arg("file", "t5-height.i32"), S = size + 2 * pad;
 export function window(path: string, f: number, x: number, y: number, n: number): Int32Array {
   const fd = openSync(path, "r"), out = new Int32Array(n * n), row = Buffer.alloc(n * 4);
@@ -35,7 +37,7 @@ export function measures(h: Int32Array, n: number, X0: number, Y0: number, per =
 if (import.meta.main) {
   const h = window(`${dir}/${file}`, face, x0 - pad, y0 - pad, S);
   const at = (x: number, y: number) => h[(Math.min(S - 1, Math.max(0, y + pad)) * S) + Math.min(S - 1, Math.max(0, x + pad))] / 256;
-  writeFileSync(arg("out", "/tmp/planet-75m/land/view/real.png"), renderLand(at, null, [0, 0, size], Number(arg("scale", "3")), 1e9, Number(arg("vex", "0"))));
+  writeFileSync(arg("out", join(BAKE, "land", "view", "real.png")), renderLand(at, null, [0, 0, size], Number(arg("scale", "3")), 1e9, Number(arg("vex", "0"))));
   console.log(JSON.stringify(measures(h, S, x0 - pad, y0 - pad)), "spectrum", JSON.stringify(diagonalPower(h, S, pad, pad, 256)));
 }
 

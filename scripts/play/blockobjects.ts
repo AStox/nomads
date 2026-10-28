@@ -4,6 +4,9 @@
 // objects' (same kind, size, seed and place to the mm), every object stands in its own cell of its block's start array, and a turned block is the same bytes whichever window made it.
 //   bun scripts/play/blockobjects.ts [lat lon] [--key 7f6ff6c82cdd] [--k 2] [--edge "0:7296:8190;2:2688:1;13.27,45"] [--shift 30] [--no-edge]
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { BAKE } from "../../src/gpu/globe/bakedir";
 import { holdGpu, exit } from "../seeded";
 import { theGpu } from "../../src/gpu/device";
 import { readback } from "../../src/gpu/kernel";
@@ -33,7 +36,7 @@ const nums = args.filter((a) => /^-?\d/.test(a) && !args[args.indexOf(a) - 1]?.s
 await holdGpu();
 const gpu = await theGpu(), g = tierGrid(TIER), loc = locateVec(g, fromLatLon((lat * Math.PI) / 180, (lon * Math.PI) / 180)), nT = 2 ** TIER;
 const tx = Math.floor(loc.X / 256), ty = Math.floor(loc.Y / 256), tile = loc.face * nT * nT + ty * nT + tx;
-const gt = readGroundTile(readFileSync(`/tmp/planet-75m/1-${key}/groundtiles/f${loc.face}/${ty}-${tx}.gt.gz`));
+const gt = readGroundTile(readFileSync(join(BAKE, `1-${key}`, "groundtiles", `f${loc.face}`, `${ty}-${tx}.gt.gz`)));
 // a window whose west edge is 60 cells into the tile and north edge 100 cells down it (the tile's corner of the objects)
 const x0 = tx * 256 + 60, y0 = ty * 256 + 100, caps = [1 << 20, 1 << 21, 1 << 22, 1 << 23, 1 << 24];
 const clip = (lo: number, hi: number) => { const a = Math.max(0, Math.floor(lo) - 1), b = Math.min(256, Math.ceil(hi) + 1); return [a, Math.max(0, b - a)]; };
@@ -90,7 +93,7 @@ const places = args.includes("--no-edge") ? [] : at("--edge", "0:7296:8190;0:806
 });
 for (const [elat, elon] of places) {
   const shift = Number(at("--shift", "30")), radiusM = ((256 << TIER) * CELL * 2) / Math.PI;
-  const wins = createWindows({ G, T, gpu, base: `file:///tmp/planet-75m/1-${key}`, tier: TIER, seed: 1, radiusM, quick: [0, 0, 0, 0], keep: 6, put: async () => {} });
+  const wins = createWindows({ G, T, gpu, base: pathToFileURL(join(BAKE, `1-${key}`)).href, tier: TIER, seed: 1, radiusM, quick: [0, 0, 0, 0], keep: 6, put: async () => {} });
   const before = edgeBad, fail = (msg: string) => { console.log(`FAIL ${msg}`); edgeBad++; };
   // an object's identity as two 32-bit lanes of a mix of its place (mm), kind, size and seed, sorted as 64-bit words to compare two sets
   const lanes = (x: number, z: number, what: number, size: number, seed: number) => {

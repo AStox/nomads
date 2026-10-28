@@ -1,7 +1,8 @@
 // A hillshaded window of a tier's heights (and its rivers where the tier's flow was made), for judging landforms by eye while the erosion is tuned:
-//   NOMADS_BAKE=/tmp/planet-75m/exp bun scripts/globe-exp-map.ts --key 883a8d9387df --tier 3 --face 1 --x 1280 --y 1536 --size 256 --out /tmp/planet-75m/maps/exp-a.png
+//   NOMADS_BAKE=$HOME/.cache/nomads-bakes/exp bun scripts/globe-exp-map.ts --key 883a8d9387df --tier 3 --face 1 --x 1280 --y 1536 --size 256 --out $HOME/.cache/nomads-bakes/maps/exp-a.png
 import { writeFileSync } from "node:fs";
-import { bakeDir } from "../src/gpu/globe/bakedir";
+import { BAKE, bakeDir } from "../src/gpu/globe/bakedir";
+import { join } from "node:path";
 import { heightColor, mix, png, type RGB } from "./globe-maps";
 
 const arg = (name: string, d: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : d; };
@@ -21,5 +22,5 @@ for (let y = 0; y < size; y++)
     }
     for (let sy = 0; sy < scale; sy++) for (let sx = 0; sx < scale; sx++) { const o = (((size - 1 - y) * scale + sy) * W + x * scale + sx) * 3; rgb[o] = c[0]; rgb[o + 1] = c[1]; rgb[o + 2] = c[2]; }
   }
-writeFileSync(arg("out", "/tmp/planet-75m/maps/exp.png"), png(W, W, rgb));
+writeFileSync(arg("out", join(BAKE, "maps", "exp.png")), png(W, W, rgb));
 void to; void (null as unknown as RGB);

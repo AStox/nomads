@@ -2,8 +2,9 @@
 //   bun test ./src/gpu/globe/air.test.ts -t "<name>" --timeout 280000
 // The cases on a staged planet (a synthetic tier 0 whose air varies smoothly with the cell, heights that are a function of the cell id) say what must hold anywhere: the rain is
 // never negative, windward slopes are wetter than lee ones, a run is the same twice and, the heart of the unit, every stored file is the SAME BYTES in the cells two patches share
-// (patches at other offsets and with other halos). The cases on the real planet (the bake of seed 1 under /tmp/planet-75m, skipped where it is not) say it of real tiles (458, 1, 14,
+// (patches at other offsets and with other halos). The cases on the real planet (the bake of seed 1 under the bake directory (bakedir.ts BAKE), skipped where it is not) say it of real tiles (458, 1, 14,
 // 17; tiles 1, 14 and 17 lie on face 0's edge against face 5), pin tile 458, measure the same place seen from two faces, and run the stage over a handful of tiles in two calls.
+import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { closeSync, existsSync, linkSync, mkdirSync, openSync, readSync, rmSync } from "node:fs";
 import { releaseGpu, theGpu } from "../device";
@@ -14,6 +15,7 @@ import { WORD_MAX_MM, airHalo, airOf, airOut, airOutputs, airStage, bgField, com
 import { sampleCoarse } from "./sample";
 import { eastNorth, pointOf, tierGrid } from "./grid";
 import { runTiles, type Ctx } from "./stages";
+import { BAKE, PLANET_STORE } from "./bakedir";
 import { BakeDir } from "./tiers";
 import { readPlanet, type Planet } from "./window";
 import { diskStore } from "../../../scripts/globe-window";
@@ -167,11 +169,11 @@ describe("the air stage on a staged planet", () => {
 });
 
 // ---------- the real planet ----------
-const KEY = "883a8d9387df", BAKE = `/tmp/planet-75m/1-${KEY}`, STOREDIR = "/tmp/planet-small/store";
-const REAL = existsSync(`${BAKE}/t4-height.i32`) && existsSync(`${BAKE}/t4-flooded.i32`) && existsSync(`${STOREDIR}/1-${KEY}`);
+const KEY = "883a8d9387df", REALDIR = join(BAKE, `1-${KEY}`), STOREDIR = PLANET_STORE;
+const REAL = existsSync(`${REALDIR}/t4-height.i32`) && existsSync(`${REALDIR}/t4-flooded.i32`) && existsSync(`${STOREDIR}/1-${KEY}`);
 const real = REAL ? test : test.skip;
 let planet: Planet | null = null;
-const realCtx = async (): Promise<Ctx> => ({ gpu: await theGpu(), planet: (planet ??= await readPlanet(1, diskStore(STOREDIR, KEY))), dir: new BakeDir(BAKE), tier: TIER });
+const realCtx = async (): Promise<Ctx> => ({ gpu: await theGpu(), planet: (planet ??= await readPlanet(1, diskStore(STOREDIR, KEY))), dir: new BakeDir(REALDIR), tier: TIER });
 const tileOf = (k: number) => ({ face: Math.floor(k / 256), tx: k % 16, ty: Math.floor((k % 256) / 16) });
 // A patch's words of a global file, read by the runs of cells that are neighbours in it (a test of a tile need not hold 400 MB of the planet)
 const gatherFile = (file: string, p: Patch) => {
@@ -186,7 +188,7 @@ const gatherFile = (file: string, p: Patch) => {
   } finally { closeSync(fd); }
   return out;
 };
-const heightsAt = (p: Patch) => ({ h: gatherFile(`${BAKE}/t4-height.i32`, p), f: gatherFile(`${BAKE}/t4-flooded.i32`, p) });
+const heightsAt = (p: Patch) => ({ h: gatherFile(`${REALDIR}/t4-height.i32`, p), f: gatherFile(`${REALDIR}/t4-flooded.i32`, p) });
 // The pinned hash of tile 458's stored words (this planet's and this engine's: re-record when the air stage, the planet or the bake changes, and say so)
 const PIN = { tile458: "e387c8d10bc31d38" };
 
@@ -276,8 +278,8 @@ describe("the air stage on the real planet (seed 1)", () => {
   }, 280_000);
 
   real("the stage over a handful of real tiles, in two calls that resume, writes the same bytes as one call", async () => {
-    const ctx = await realCtx(), tiles = [458, 1, 14], work = "/tmp/planet-75m/air-scratch/stage", one = `${work}-one`;
-    for (const d of [work, one]) { rmSync(d, { recursive: true, force: true }); mkdirSync(d, { recursive: true }); for (const f of STAGE.inputs) linkSync(`${BAKE}/${f}`, `${d}/${f}`); }
+    const ctx = await realCtx(), tiles = [458, 1, 14], work = join(BAKE, "air-scratch", "stage"), one = `${work}-one`;
+    for (const d of [work, one]) { rmSync(d, { recursive: true, force: true }); mkdirSync(d, { recursive: true }); for (const f of STAGE.inputs) linkSync(`${REALDIR}/${f}`, `${d}/${f}`); }
     const split = { ...ctx, dir: new BakeDir(work) }, whole = { ...ctx, dir: new BakeDir(one) };
     try {
       const p1 = await runTiles(split, STAGE, 1e9, () => {}, [458]);
