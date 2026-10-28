@@ -1,5 +1,5 @@
 // The scatter (scatter.ts): what grew on a tile of the 75 m tier, a pure function of the tile's fields and the draws keyed by its quads. The cases run on the real planet (the bake of seed 1 under
-// /tmp/planet-75m, skipped where it is not) with the ground stage's outputs made for the tiles they need in /tmp/planet-75m/ground-scratch/bake (ground-staged.ts: the air stage's files, a
+// the bake directory, skipped where it is not) with the ground stage's outputs made for the tiles they need in the bake directory's ground-scratch/bake (ground-staged.ts: the air stage's files, a
 // stand-in for the water stage's, the ground's own). The island's own scenery goldens (gpu/terrain/scenery.test.ts) are the proof that the widened kernels are the island's. Each case alone:
 //   lockf /tmp/nomads-gpu.lock bun test ./src/gpu/globe/scatter.test.ts -t "<name>" --timeout 280000
 import { afterAll, describe, expect, test } from "bun:test";

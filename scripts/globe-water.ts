@@ -1,4 +1,4 @@
-// The planet's water over the 75 m tier (src/gpu/globe/water.ts, discharge.ts), in calls of at most --budget seconds into /tmp/planet-75m/<seed>-<planet key>/: run each stage again until it
+// The planet's water over the 75 m tier (src/gpu/globe/water.ts, discharge.ts), in calls of at most --budget seconds into the bake directory (bakedir.ts BAKE, default ~/.cache/nomads-bakes), in <seed>-<planet key>/: run each stage again until it
 // says done, in this order: surplus (each season's surplus over every cell, the weights), discharge (the exact global sums down the whole forest), water (the hydrology on every tile's patch).
 // `--only a,b,c` limits surplus and water to those tiles (tile = face * T * T + ty * T + tx, T = 2^tier tiles along a face; `--tier` defaults to the planet's finest, grid.ts PLANET_TIER); the discharge is always the whole planet's.
 //   lockf /tmp/nomads-gpu.lock bun scripts/globe-water.ts --stage surplus --seed 1 --key c418e5fe9b5e

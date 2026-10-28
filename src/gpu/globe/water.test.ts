@@ -1,12 +1,13 @@
 // The planet's water stage (water.ts): the island's hydrology on a tile's patch, with the planet's receivers, flooded surface, hollows and discharge. The cases run on a staged planet at tier 2
 // (water-staged.ts: the regional kernels' own flood and receivers over a ridge on the cube's edge, with three pits whose lakes cross a tile's edge and a face's edge) and one on the real tier 4.
-// Each case alone (the staged fixture is made once, about 40 s, and kept in /tmp/planet-75m/water-scratch):
+// Each case alone (the staged fixture is made once, about 40 s, and kept in the bake directory's water-scratch):
 //   lockf /tmp/nomads-gpu.lock bun test ./src/gpu/globe/water.test.ts -t "<name>" --timeout 280000
+import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, symlinkSync } from "node:fs";
 import { releaseGpu, theGpu } from "../device";
 import { SEASON_S } from "../../terrain/water";
-import { BakeDir } from "./bakedir";
+import { BAKE, BakeDir } from "./bakedir";
 import { gatherTwin, readDischarge, valueAt } from "./discharge";
 import { tierGrid } from "./grid";
 import { localOf, patchAt, patchOf, tileAt, type Patch } from "./patch";
@@ -15,7 +16,7 @@ import { STAGED_TIER, stagedClimate, stagedPlanet } from "./water-staged";
 import { WATER_HALO, cellsStem, dischargeStems, inflowOf, mapped, unmap, waterFiles, waterOf, waterStage, lastRun, climateFor } from "./water";
 
 afterAll(releaseGpu);
-const SCRATCH = "/tmp/planet-75m/water-scratch", T = STAGED_TIER, p = `t${T}-`;
+const SCRATCH = join(BAKE, "water-scratch"), T = STAGED_TIER, p = `t${T}-`;
 let fixture: Promise<Ctx> | undefined;
 const staged = () => (fixture ??= theGpu().then((gpu) => stagedPlanet(gpu, new BakeDir(`${SCRATCH}/stage-t${T}`))));
 const hash = (f: Field) => Bun.hash(new Uint8Array(f.buffer, f.byteOffset, f.byteLength)).toString(16);
@@ -196,7 +197,7 @@ describe("the planet's water stage", () => {
   });
 
   // the real tier 4's mountain tile 458 (face 1, tile 10, 12), with the global discharge the planet's bake holds: pinned to the bake of 2026-10-21 (the stand-in rain until the air stage's files exist)
-  const key = "/tmp/planet-75m/1-883a8d9387df", have = existsSync(`${key}/t4-q3-hi.u16`) && existsSync(`${key}/t4-cells.u32`) && existsSync(`${key}/t4-dd.u16`);
+  const key = join(BAKE, "1-883a8d9387df"), have = existsSync(`${key}/t4-q3-hi.u16`) && existsSync(`${key}/t4-cells.u32`) && existsSync(`${key}/t4-dd.u16`);
   test.skipIf(!have)("a mountain tile of the real planet is the same bytes twice, pinned", async () => {
     const ctx: Ctx = { gpu: await theGpu(), planet: {} as never, dir: new BakeDir(key), tier: 4 }, patch = patchOf(4, 1, 10, 12, WATER_HALO);
     const climate = climateFor((h) => ({ precip: [1.3, 0.8, 0.6, 1.3].map((w) => (20 + 0.02 * Math.max(0, h)) * w), pet: [0.3, 1.3, 1.6, 0.5].map((x) => 40 * x) }));

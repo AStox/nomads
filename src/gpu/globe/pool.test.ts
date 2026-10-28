@@ -1,13 +1,14 @@
 // The pooled coarse tier: every cell of tier 0 pooled from tier 2's files (the 4 by 4 children, as tier 3 from tier 5) is what plain arithmetic over its children gives, the classes by their most
 // held code, the companded rain by the mean of the squares; a stopped and resumed pool is the bytes of one call; the marker belongs to the tier it pools to.
+import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { closeSync, openSync, readSync, rmSync } from "node:fs";
 import { forget, KINDS, typeOf } from "./stages";
-import { BakeDir, tierFile } from "./bakedir";
+import { BAKE, BakeDir, tierFile } from "./bakedir";
 import { POOL, poolTier } from "./pool";
 import { doneFileOf } from "./stages";
 
-const DIR = "/tmp/planet-75m/pool-scratch", FROM = 2, TO = 0, N = 256 << FROM, n = 256 << TO;
+const DIR = join(BAKE, "pool-scratch"), FROM = 2, TO = 0, N = 256 << FROM, n = 256 << TO;
 afterAll(() => { forget(); for (const d of [DIR, `${DIR}-b`]) rmSync(d, { recursive: true, force: true }); });
 // words as a function of the cell and the file alone (a hash of both), in the range each file holds
 function make(dir: BakeDir) {

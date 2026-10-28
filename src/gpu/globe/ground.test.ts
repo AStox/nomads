@@ -2,7 +2,7 @@
 //   lockf /tmp/nomads-gpu.lock bun test ./src/gpu/globe/ground.test.ts -t "<name>" --timeout 280000
 // The island's own site is the oracle for the widening: the patch format at the island's size (a sweep of any reach, a thread to every 256th column) must give the island's kernels' words,
 // and the island's ground made again from the stage's stored words (the units the files keep) must be the same ground to what those units hold. The cases on the real planet (the bake of
-// seed 1 under /tmp/planet-75m, skipped where it is not) make the air stage's and a stand-in water stage's files for the tiles they need in /tmp/planet-75m/ground-scratch/bake (links to the
+// seed 1 under the bake directory (bakedir.ts BAKE), skipped where it is not) make the air stage's and a stand-in water stage's files for the tiles they need in the bake directory's ground-scratch/bake (links to the
 // bake's heights and terrain files, the rest written there) and measure what a halo cuts: two patches half a tile apart, and one place seen from the two faces of a cube's edge.
 // The stand-in water (ground-staged.ts) is a function of each cell's height and discharge area and is not the water stage's: the cases that read the water stage's own files (t4-water.u16 and
 // the rest) use them when the bake has them.

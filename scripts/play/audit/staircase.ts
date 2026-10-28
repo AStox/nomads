@@ -1,10 +1,12 @@
 // How much of a window's stream centreline is a staircase, before and after the smoothing (src/gpu/globe/streamcurve.ts), and whether two neighbouring windows draw the same curve.
-//   bun scripts/play/audit/staircase.ts <lat> <lon> [--bake /tmp/planet-75m-new/1-1121d207f3b8] [--seam]
+//   bun scripts/play/audit/staircase.ts <lat> <lon> [--bake <BAKE>/1-1121d207f3b8] [--seam]
 // CPU only (no GPU, no browser): the ground tile holding (lat, lon) of the finest tier, its stream steps as demo/tile.ts windowRivers makes them against the cell chain (each channel cell's centre to
 // its receiver's), both resampled at the mask's texel (4.69 m) along each stream from its source; the share of samples where the line turns by 30 degrees or more within 4 texels either side (a
 // D8 chain turns by 45 or 90 at its steps, a smooth curve of 75 m cells by under a few degrees), the 95th and 99th percentile of that turn, how far the nodes move and how far a curve strays from its
 // cell step (at most half a cell). With --seam, the tile and its east neighbour's windowRivers over their shared cells, at the steps 6 or more cells inside both patches: the largest difference.
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { BAKE } from "../../../src/gpu/globe/bakedir";
 import { windowRivers } from "../../../demo/tile";
 import { fromLatLon, locateVec, tierGrid } from "../../../src/gpu/globe/grid";
 import { readGroundTile, tileSource } from "../../../src/gpu/globe/groundtile";
@@ -13,9 +15,9 @@ import { SIZE } from "../../../src/terrain/flora";
 import { CELL } from "../../../src/terrain/grid";
 
 const args = process.argv.slice(2), at = (n: string, d: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
-const nums = args.filter((a, i) => /^-?\d/.test(a) && args[i - 1] !== "--bake").map(Number), lat = nums[0] ?? 12.23, lon = nums[1] ?? 83.85, BAKE = at("--bake", "/tmp/planet-75m-new/1-1121d207f3b8");
+const nums = args.filter((a, i) => /^-?\d/.test(a) && args[i - 1] !== "--bake").map(Number), lat = nums[0] ?? 12.23, lon = nums[1] ?? 83.85, BAKEDIR = at("--bake", join(BAKE, "1-1121d207f3b8"));
 const loc = locateVec(tierGrid(5), fromLatLon((lat * Math.PI) / 180, (lon * Math.PI) / 180)), tx = Math.floor(loc.X / 256), ty = Math.floor(loc.Y / 256);
-const load = (x: number, y: number) => tileSource(readGroundTile(readFileSync(`${BAKE}/groundtiles/f${loc.face}/${y}-${x}.gt.gz`)));
+const load = (x: number, y: number) => tileSource(readGroundTile(readFileSync(`${BAKEDIR}/groundtiles/f${loc.face}/${y}-${x}.gt.gz`)));
 const source = load(tx, ty), after = windowRivers(source);
 const TEX = SIZE / 4096;
 

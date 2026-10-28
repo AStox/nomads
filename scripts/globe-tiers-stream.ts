@@ -1,5 +1,5 @@
 // The planet's finer tiers solved out of core (src/gpu/globe/tiers-stream.ts) into the same files as scripts/globe-tiers.ts writes, in calls of at most --budget seconds into
-// $NOMADS_BAKE/<seed>-<planet key>/ (default /tmp/planet-75m): run it again until it says done. Memory stays at a patch's buffers and a tile cache whatever the tier.
+// $NOMADS_BAKE/<seed>-<planet key>/ (default ~/.cache/nomads-bakes): run it again until it says done. Memory stays at a patch's buffers and a tile cache whatever the tier.
 //   bun scripts/globe-tiers-stream.ts --seed 1 --key 883a8d9387df --tier 4 --last 4 --budget 200      # one tier, resumable
 //   bun scripts/globe-tiers-stream.ts --seed 1 --last 5                                              # every unfinished tier up to 5
 //   --block 2 --order reverse|<seed>     another tiling and another order of the visits (the bytes do not change)

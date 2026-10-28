@@ -2,12 +2,13 @@
 // at a cube's corners and along a face's edge, since the real tier is not baked. What must hold: a cell's stored words are the same from two patches that overlap (the tier's block of tier 0
 // is 32 cells, not 16, and the halo larger), the stage's files land at the tier's own offsets, and the tier-4 bake's pins (air.test.ts, ground.test.ts) are unchanged by the generalisation.
 // Each case alone: bun test ./src/gpu/globe/tier5.test.ts -t "<name>" --timeout 290000
+import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { closeSync, openSync, readSync, rmSync, writeSync } from "node:fs";
 import { releaseGpu, theGpu } from "../device";
 import { GRANITE } from "../../terrain/geology";
 import { airHalo, airOf, airOut, airOutputs, airStage, compact } from "./air";
-import { BakeDir, tierFile } from "./bakedir";
+import { BAKE, BakeDir, tierFile } from "./bakedir";
 import { PLANET_RADIUS_M, PLANET_TIER } from "./grid";
 import { patchAt, patchOf, tileAt, tileCount, type Patch } from "./patch";
 import { doneFileOf, runTiles, type Ctx, type TileStage } from "./stages";
@@ -15,7 +16,7 @@ import { TERRAIN_HALO, terrainOf } from "./terrain";
 import type { Planet } from "./window";
 
 afterAll(releaseGpu);
-const TIER = 5, FN = 256 << TIER, N0 = 6 * 256 * 256, HALO = airHalo(TIER), SCRATCH = "/tmp/planet-75m/tier5-scratch";
+const TIER = 5, FN = 256 << TIER, N0 = 6 * 256 * 256, HALO = airHalo(TIER), SCRATCH = join(BAKE, "tier5-scratch");
 const bytes = (a: ArrayBufferView) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
 const hashOf = (arrays: ArrayBufferView[]) => Bun.hash(Buffer.concat(arrays.map(bytes))).toString(16);
 

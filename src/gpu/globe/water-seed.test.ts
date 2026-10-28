@@ -1,12 +1,13 @@
 // The seeded patch (water-seed.ts, WaterFormat.seeded): the aquifer's start is the coarse global solve's heads carried to the cell, so a cell's seed must not depend on the patch it is read in, and a
 // real tile's answer must be the same words in two patches that hold it differently. Each case alone:
 //   lockf /tmp/nomads-gpu.lock bun test ./src/gpu/globe/water-seed.test.ts -t "<name>" --timeout 280000
-// The real case needs the planet of key 883a8d9387df baked at tier 4 and its tier-3 global solve (`--stage coarse`) in /tmp/planet-75m/water-scratch/t3 (t3-g-head1.i32, t3-g-head2.i32).
+// The real case needs the planet of key 883a8d9387df baked at tier 4 and its tier-3 global solve (`--stage coarse`) in the bake directory's water-scratch/t3 (t3-g-head1.i32, t3-g-head2.i32).
+import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
 import { releaseGpu, theGpu } from "../device";
 import { AIR_UNIT, precipOfWord } from "./air";
-import { BakeDir } from "./bakedir";
+import { BAKE, BakeDir } from "./bakedir";
 import { tierGrid } from "./grid";
 import { patchAt } from "./patch";
 import type { Ctx, Field } from "./stages";
@@ -46,7 +47,7 @@ describe("the coarse heads carried to a patch", () => {
 });
 
 // the real tier 4: the tier's own files linked into a scratch directory with the tier-3 solve's heads beside them
-const REAL = "/tmp/planet-75m/1-883a8d9387df", SCR = "/tmp/planet-75m/water-scratch/t4real", T3 = "/tmp/planet-75m/water-scratch/t3";
+const REAL = join(BAKE, "1-883a8d9387df"), SCR = join(BAKE, "water-scratch", "t4real"), T3 = join(BAKE, "water-scratch", "t3");
 const have = existsSync(`${REAL}/t4-q3-hi.u16`) && existsSync(`${REAL}/t4-cells.u32`) && existsSync(`${T3}/t3-g-head2.i32`);
 const hash = (f: Field) => Bun.hash(new Uint8Array(f.buffer, f.byteOffset, f.byteLength)).toString(16);
 

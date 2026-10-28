@@ -1,6 +1,7 @@
 // The global discharge gather (discharge.ts): exact where a basin's sum passes 32 bits, across a face's edge, and on the real planet's tier 4 equal at a sample of cells to the walk up the
 // forest. Each case alone:
 //   lockf /tmp/nomads-gpu.lock bun test ./src/gpu/globe/discharge.test.ts -t "<name>" --timeout 280000
+import { join } from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { releaseGpu, theGpu } from "../device";
@@ -9,6 +10,7 @@ import { dischargeOf, gatherTwin, hiFile, loFile, ONES, readDischarge, sumUpstre
 import { FACES, centre, tierGrid, type Grid } from "./grid";
 import { cellAcross } from "./patch";
 import { Regional, remapHeights, tierTable } from "./regional";
+import { BAKE } from "./bakedir";
 import { BakeDir } from "./tiers";
 import type { Planet } from "./window";
 
@@ -63,9 +65,9 @@ describe("the global discharge", () => {
     } finally { r.release(); }
   });
 
-  const real = new BakeDir("/tmp/planet-75m/1-c418e5fe9b5e");
+  const real = new BakeDir(join(BAKE, "1-c418e5fe9b5e"));
   test.skipIf(!existsSync(real.path("t4-to.u32")))("on the real planet's tier 4 a cell's discharge is the sum of everything draining to it", async () => {
-    const N = FACES * 4096 * 4096, scratch = "/tmp/planet-75m/water-scratch/discharge";
+    const N = FACES * 4096 * 4096, scratch = join(BAKE, "water-scratch", "discharge");
     mkdirSync(scratch, { recursive: true });
     const dir = new BakeDir(scratch), w = Uint32Array.from({ length: N }, (_, k) => 1 + (Math.imul(k, 2654435761) >>> 11)); // 1 to 2^21 a cell
     dir.write("weights.u32", w);

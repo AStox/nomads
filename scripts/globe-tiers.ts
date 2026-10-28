@@ -1,4 +1,4 @@
-// The planet's finer tiers (src/gpu/globe/tiers.ts) made from a planet kept by scripts/globe-planet.ts, in calls of at most --budget seconds into /tmp/planet-75m/<seed>-<planet key>/:
+// The planet's finer tiers (src/gpu/globe/tiers.ts) made from a planet kept by scripts/globe-planet.ts, in calls of at most --budget seconds into the bake directory (bakedir.ts BAKE, default ~/.cache/nomads-bakes), in <seed>-<planet key>/:
 // run it again until it says done.
 //   bun scripts/globe-tiers.ts --seed 1 --last 4
 //   bun scripts/globe-tiers.ts --seed 1 --last 2 --key 4c2a2cb36ba6      # a planet the globe's sources made before they changed
