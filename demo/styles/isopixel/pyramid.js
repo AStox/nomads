@@ -11,6 +11,7 @@
 // the halo repeats the tile's own edge cell until the neighbour arrives (a held tile's halo is refreshed when one does).
 //   table:   per tile of every tier, its atlas layer or NONE (storage buffer, the shader's page table)
 import { fetchTileBytes } from "./tilecache.js";
+import { tr } from "./trace.js";
 const TILE = 256, HALO = 2, HS = TILE + 2 * HALO, FHS = TILE + 2, NONE = 0xffffffff, hStep = 0.25;
 const TYPES = { i8: Int8Array, u8: Uint8Array, i16: Int16Array, u16: Uint16Array, i32: Int32Array, u32: Uint32Array, f32: Float32Array };
 
@@ -222,13 +223,29 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
   async function load(i) {
     flying.add(i);
     try {
-      const { t, f, tx, ty } = tileOf(i), { raw, bytes } = await fetchTileBytes(url(t, f, tx, ty)), { planes } = decodeTile(raw);
+      const { t, f, tx, ty } = tileOf(i), t0 = performance.now(), { raw, bytes } = await fetchTileBytes(url(t, f, tx, ty)), t1 = performance.now(), { planes } = decodeTile(raw), t2 = performance.now();
       stats.fetched++; stats.bytes += bytes;
-      if (!put(i, planes)) { stash.set(i, planes); while (stash.size > 16) stash.delete(stash.keys().next().value); }
+      const ok = put(i, planes);
+      tr("tile", i, t, f, tx, ty, bytes, +(t1 - t0).toFixed(1), +(t2 - t1).toFixed(1), +(performance.now() - t2).toFixed(1), ok ? 1 : 0);
+      if (!ok) { stash.set(i, planes); while (stash.size > 16) stash.delete(stash.keys().next().value); }
     } catch (e) {
       // a missing file never comes; any other failure (the network, a timeout) is tried again after a pause
       if (e.status === 404) absent.add(i); else { retryAt.set(i, performance.now() + 4000); console.warn(`tile ${i}: ${e.message}`); }
-    } finally { flying.delete(i); }
+    } finally { flying.delete(i); pump(); }
+  }
+  // the tiles the last list wanted, most wanted first, that are free to start: a fetch that ends starts the next at once, not at the next frame the page sends (a still picture's frames come every 250 ms)
+  let wantList = [];
+  function pump() {
+    const now = performance.now();
+    for (const w of wantList) {
+      const i = tileIndex(w.t, w.f, w.tx, w.ty);
+      if (slotOf.has(i) || absent.has(i) || flying.has(i) || !faces.includes(w.f)) continue;
+      if (stash.has(i)) { if (put(i, stash.get(i))) stash.delete(i); continue; }
+      if ((retryAt.get(i) ?? 0) > now) continue;
+      if (flying.size >= inflight) break;
+      tr("ask", i, w.t, w.f, w.tx, w.ty);
+      load(i);
+    }
   }
 
   // tier 0 whole, before the first frame
@@ -271,16 +288,9 @@ export async function openPyramid({ device, base, tiers, faces, across: cellAcro
     // the tiles a frame wants, [{ t, f, tx, ty }] most wanted first: marks them wanted, and starts the fetches that are free
     want(list) {
       frameNo++;
-      const now = performance.now();
-      for (const w of list) {
-        const i = tileIndex(w.t, w.f, w.tx, w.ty);
-        lastWant.set(i, frameNo);
-        if (slotOf.has(i) || absent.has(i) || flying.has(i) || !faces.includes(w.f)) continue;
-        if (stash.has(i)) { if (put(i, stash.get(i))) stash.delete(i); continue; }
-        if ((retryAt.get(i) ?? 0) > now) continue;
-        if (flying.size >= inflight) break;
-        load(i);
-      }
+      for (const w of list) lastWant.set(tileIndex(w.t, w.f, w.tx, w.ty), frameNo);
+      wantList = list;
+      pump();
       flush();
     },
     flush,

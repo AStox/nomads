@@ -89,7 +89,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   const worker = new Worker(new URL(`./worker.js${ex ? `?exag=${encodeURIComponent(ex)}` : ""}`, import.meta.url), { type: "module" });
   let fieldsMsg = null, lost = null, lastError = null, info = null, objectsReady = false, lastDone = null, picksWait = new Map(), pickId = 0;
   // what the worker posts of the sim, held until the page listens (onSim)
-  let simTo = null, quietDone = 0;
+  let simTo = null, quietDone = 0, arriving = false;
   const simEarly = [];
   const frameMs = [];
   // the levels and whole bearings ("L|b") whose front lists the worker has built (webgpu.js frontsReady), and those the
@@ -117,6 +117,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       if (m.k0 !== undefined && stats.window?.id === m.win) stats.window.share = 2 ** -m.k0;
       // settled: the worker's word that what it drew has what the view asked of the planet (or, until it says so, that its tiles are held and none is in flight)
       quietDone = (m.settled ?? (m.tiles ? m.tiles.held > 0 && m.tiles.flying === 0 : true)) ? quietDone + 1 : 0;
+      arriving = !!m.arriving;
       if (m.fronts !== undefined) fronts = new Set(m.fronts ? m.fronts.split(",") : []);
       const sent = sentAt.get(m.id);
       sentAt.delete(m.id);
@@ -282,13 +283,13 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function syncGeo(view) {
     if (!PLACE) return;
     const s = view.synced, g = view.geo;
-    if (!g || !s || view.x !== s.x || view.z !== s.z) view.geo = geoOf(view.x, view.z);
-    else if (g.lat !== s.lat || g.lon !== s.lon) { const q = planeOf(g); if (q) { view.x = q.x; view.z = q.z; } }
+    if (!g || !s || view.x !== s.x || view.z !== s.z) { view.geo = geoOf(view.x, view.z); view.planeless = false; }
+    else if (g.lat !== s.lat || g.lon !== s.lon) { const q = planeOf(g); view.planeless = !q; if (q) { view.x = q.x; view.z = q.z; } }
     view.synced = { x: view.x, z: view.z, lat: view.geo.lat, lon: view.geo.lon };
   }
   // a target the camera solved for (solveTarget): its plane place, and its planet place when it came from the planet
   function setTarget(view, T) {
-    view.x = T.x; view.z = T.z;
+    view.x = T.x; view.z = T.z; view.planeless = false;
     if (T.geo) { view.geo = T.geo; view.synced = { x: view.x, z: view.z, lat: T.geo.lat, lon: T.geo.lon }; }
   }
   // The planet's camera and its geodesic pan hold where the play area's plane (flat, about the place) would stretch: from ZLAD out,
@@ -312,12 +313,15 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function applyGroundMsg(m, view, f) {
     commitFields(f);
     gid = m.gid;
-    if (m.mode === "win" && mode !== "win") winFadeAt = performance.now();
+    // the ladder comes in over half a second where it shows none now: after the island or no ground, and after a jump (the window drawn covers nothing of the view: coverFade 0), where a replaced window's ladder is
+    // drawn over the same planet and swaps unseen
+    if (m.mode === "win" && (mode !== "win" || coverFade(view) < 0.01)) winFadeAt = performance.now();
     groundAt = performance.now();
     mode = m.mode;
     FRM = m.mode === "win" ? { c: m.frame.c, e: m.frame.e, n: m.frame.n, scale: m.frame.scale, rot: m.frame.rot, cells: cellsOfId(m.frame.id) } : HOME;
     if (view.geo) {
       const q = planeOf(view.geo);
+      view.planeless = !q;
       if (q) { view.x = q.x; view.z = q.z; }
       view.synced = { x: view.x, z: view.z, lat: view.geo.lat, lon: view.geo.lon };
     }
@@ -330,7 +334,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     if (!view.geo) return;
     if (panGeo && now > panAt) {
       const dt = (now - panAt) / 1000, vl = (view.geo.lat - panGeo.lat) / dt, vo = (view.geo.lon - panGeo.lon) / dt;
-      panV = panV ? { lat: panV.lat * 0.8 + vl * 0.2, lon: panV.lon * 0.8 + vo * 0.2 } : { lat: vl, lon: vo };
+      // a jump (the target lands more than two screens from where it was a frame ago) is no drift: carried three seconds on it asked for a window at every place on the way to the target, 40 asks in the first second
+      const step = Math.hypot(view.geo.lat - panGeo.lat, (view.geo.lon - panGeo.lon) * Math.cos(view.geo.lat * D2R)) * D2R * PR;
+      panV = step > 2 * viewExtent(view) ? null : panV ? { lat: panV.lat * 0.8 + vl * 0.2, lon: panV.lon * 0.8 + vo * 0.2 } : { lat: vl, lon: vo };
     }
     panGeo = { lat: view.geo.lat, lon: view.geo.lon };
     panAt = now;
@@ -512,7 +518,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     if (!I || !Number.isFinite(I.pyr)) return liftLatch;
     const L = liftLatch, a = 1 - Math.exp(-Math.min(1000, now - liftAt) / LIFT_TAU);
     liftAt = now;
-    if (!L || !Number.isFinite(L.pyr) || !Number.isFinite(I.box)) return { ...I };
+    // tiles of a finer level have arrived (the surface the planet pass marches changes at once, wgsl/globe.js gMarch): the camera stands at the height of that surface from this frame, not eased to it, or the picture
+    // slides by the difference while the finer level fades in (a far jump: 130 m at A, a screen's width and more at zoom 3)
+    if (!L || !Number.isFinite(L.pyr) || !Number.isFinite(I.box) || I.tier > L.tier) return { ...I };
     const dlon = ((I.lon - L.lon + 540) % 360) - 180;
     return Math.hypot((I.lat - L.lat) * D2R * PR, dlon * D2R * PR * Math.cos(I.lat * D2R)) < L.box ? { ...I, pyr: L.pyr + (I.pyr - L.pyr) * a } : { ...I };
   }
@@ -1183,7 +1191,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // One level of detail across the whole screen (plan R6): the ladder's ground is only as large as the play area or the window laid at the camera, so it is shown only when
   // it fills the canvas (the margin, in metres, by which the viewport lies inside the area less its faded edge), and it comes in by one fade over the whole canvas as the margin
   // opens; until then the planet layer alone is drawn, at the same level everywhere on the screen.
-  const coverMargin = (view) => SIZE / 2 - PLAY_EDGE_M - Math.max(Math.abs(view.x), Math.abs(view.z)) - viewExtent(view);
+  // (a place the plane has no coordinates for, on the far side of the planet from the ground's frame, has none of the ground: syncGeo leaves its last x, z, which would pass for a place the window covers)
+  const coverMargin = (view) => (view.planeless ? -1e12 : SIZE / 2 - PLAY_EDGE_M - Math.max(Math.abs(view.x), Math.abs(view.z)) - viewExtent(view));
   const coverFade = (view) => (PLACE ? smooth(0, 1, coverMargin(view) / (0.5 * viewExtent(view))) : 1);
   const ladderAlpha = (view) => (PLACE ? smooth(ZLAD, ZLAD + 1, view.zoom) * winFade() * coverFade(view) : 1);
   // whether any of the play area (and its fade) can be in the canvas, by the corners' screen box a quarter canvas wider on every side
@@ -1308,9 +1317,10 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     if (lutSent !== sky.id) { msg.lut = T.gpu.slice(); lutSent = sky.id; }
     // A frame that says what the last one said (no camera, sky, ground or water step in it, no sprite or table to send) is posted again only once HEARTBEAT_MS have passed, which is how what
     // lands in the worker meanwhile (tiles, pages, a window) still reaches the screen: a still world was drawn 60 times a second for nothing. A game's frames always differ (its things move), so it skips the test.
+    // Not while the worker says its picture is still arriving (the planet's level fading in, tiles in flight): a fade drawn at four frames a second, after a jump, lasted a second and a half.
     if (!simOpts && !msg.lut && !msg.sprites.length) {
       const { lut, sprites, ...rest } = msg, sig = JSON.stringify({ ...rest, id: 0 });
-      if (sig === lastSig && t0 - lastPostAt < HEARTBEAT_MS) { stats.skipped = (stats.skipped ?? 0) + 1; return finishFrame(show, pl, t0); }
+      if (sig === lastSig && t0 - lastPostAt < HEARTBEAT_MS && !arriving) { stats.skipped = (stats.skipped ?? 0) + 1; return finishFrame(show, pl, t0); }
       lastSig = sig;
     }
     lastPostAt = t0;

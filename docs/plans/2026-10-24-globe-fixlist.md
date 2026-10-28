@@ -10,6 +10,7 @@ parent: docs/plans/2026-10-20-001-feat-seamless-globe-plan.md
 The auditors' lists lived in /tmp (`/tmp/globe-audit/fixlist.md`, `/tmp/globe-e2e/issues.md`) and were lost with it. This is rebuilt from the plan's Unit 9 entries and the leads' notes. Gates: `scripts/play/audit/README.md`. Per-item detail: the plan's Unit 9 handovers.
 
 ## Published (main, newest first)
+- Far jump over land: the picture is at the finest tier 40 to 110 ms after the jump in one 0.4 s cross-fade (was a 1.7 s ramp of levels, 4 frames a second, then a slide of the camera's lift), the block of fine pages 0.5 s after (was 1.1), zoom 2 at 0.9 correlation with the final picture in 1.1 s (was 3.5), the window's ladder fades in over 0.5 s after a jump and keeps its objects (branch lead3-arrive2).
 - The sea at zoom -1 to 3 has no pixel grain (waves fade by the pixel's longest side on the ground, swell bands with their own directions, 837e168); waves at every zoom from a wind spectrum, glint only from the facet term (10e3775); no lattice, no confetti.
 - Window arrivals do not stall the picture (1c4111b); the lattice snaps at once after a far jump and the pick is the ray's own (14f4382).
 - Orbit drag: the grab is held under the cursor through a pole and at the limb; roll only where north-up cannot hold the grab (745cd2a).
@@ -23,7 +24,7 @@ The auditors' lists lived in /tmp (`/tmp/globe-audit/fixlist.md`, `/tmp/globe-e2
 | Item | State | Owner / branch |
 |---|---|---|
 | Ground crown colour vs sprites; E2 crown apron | the derived version (branch lead3-cd d8f27e0: shade from the sprites' own rho and the Boolean model, no fitted constants) does not meet the gate: A in 3.3 3.4 to 5.6, out 2.9 4.4 to 5.7, B out 3.5 4.6 to 5.9, in 3.9 6.3 to 7.2, far steps under zoom 2 +0.3 to +1.3 (the crown is 4 to 11 luma brighter), A hand-over steps lower (3.9 to 4.8 run 10.8/9.4/7.6/7.7 to 9.9/8.4/5.5/5.8), apron share 12.5% to 13.0% at 45.3 E (absolute pixels halved, crown area halved); parked | branch lead3-cd (d8f27e0), earlier lead3-crownshadow (ea136c3) |
-| Far jump over land: picture is a coarse tier for 1.4 to 3.3 s, then pops (sea fine) | agent working | branch lead3-arrive2 |
+| Far jump over land at zoom 3 and 4: the window's objects (0.8 to 1.0 s of GPU), the ground message to the switch (up to 0.4 s of the page's camera heights), the block's ground tiles fetched one source at a time (slow link), crown colour against sprites across the 0.5 s ladder fade | zoom 2 and the tier picture done (branch lead3-arrive2); the rest listed in the plan's arrival entry | open |
 | Wheel tick at B zoom 1.5 / -2 and a cursor on the near side: picture drifts 64 to 96 px, API 0 to 13 | cause not found; the camera's number is right | open |
 | Orbit roll past cos(latitude) of the radius is forced; early roll 10 to 18 degrees from the hop-limited walk | accepted (the operator prefers gentle roll to jumps) | none |
 | Straight D8 rivers, evenly spaced ridges, straight coasts, B zoom 6 orange dry beds (bake data) | tier 0 and 1 redesign for natural rivers, then a full rebake | terrain agent, branches globe-t3, globe-t4* |

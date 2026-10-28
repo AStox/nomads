@@ -17,6 +17,7 @@ import { PICK_SLOT, EXTRA_PICK, KIND_PICK, NO_SLOT, CELLS_N, CELL_M } from "./wg
 import { closeGround } from "./ground-at.js";
 import { LADDER } from "./ladder.js";
 import { openPyramid } from "./pyramid.js";
+import { tr } from "./trace.js";
 import { BLOCK_CAPS, RING_OUT, createWindows } from "./groundwin.js";
 
 const early = [];
@@ -983,6 +984,7 @@ async function check(m) {
   // the share each block of the drawn window is drawn at (2^-eff of what its ground grew) and where it stands in the window's cells (plan R6: the blocks the screen can touch must all show one share)
   if (m.op === "shares") return curWin?.blockRecs && { k0: curWin.blockK0, view: curWin.blockView, blocks: curWin.blockRecs.map((b) => ({ key: b.key, eff: curWin.blockKd?.get(b.key) ?? b.k, made: b.k, c0: b.X - curWin.x0, z0: curWin.y0 + 256 - (b.Y + 64) })) };
   // whether the page is still making what it draws (the planet's level and fine pages still rising, sprites made on demand, the window's blocks, a switch): a still taken before it is idle shows the nearest sprite made, so a gate waits for busy to stay false
+  if (m.op === "arr") { const out = globalThis.__arr ?? []; globalThis.__arr = m.off ? null : []; return { origin: performance.timeOrigin, ev: out }; }
   if (m.op === "idle") return { busy: !!planetLayer?.rising?.() || !!refreshing || !!curWin?.blocksBusy || switching || building || !!prepared || surveying > 0 || blkMaking, sprites: nStatic + (dyn ? dynUsed() : 0), asked: asked.size };
   if (m.op === "front") { R.setFrontUse(!!m.on); return true; }
   // view 0's G-buffer kept (gsnap), and the next one compared with it pixel by pixel (gdiff): what each pixel shows
@@ -1136,6 +1138,8 @@ function groundAnswer(f, g) {
 // The pages the planet pass reads where no window is (the view is wider than a window covers, under about zoom 3, or the camera is away from any): a block of them round the camera's page, made behind the frames and
 // moved by whole pages when the camera is more than half a page from its middle. Pages are global, so a window made later finds those that are its own. blk is the block the painter has (first page, in cells)
 let blk = null, blkMaking = false, blkDist = 0, blkMoved = 0;
+// how long the camera's distance stands still before the block is made: a zoom's frames are under 100 ms apart, and a jump (nothing moves after it) should show its fine pages as soon as the tiers [design: one heartbeat of the page's frames, live.js HEARTBEAT_MS]
+const BLOCK_WAIT_MS = 250;
 // whether the window drawn holds the camera's target well inside its own pages (a window's 16 pages are 256 cells; the margin leaves the view's reach to the pages round it): a camera far from it
 // (a window kept from another place) is followed by the block as if there were none, so the pages the planet pass reads do not depend on the windows made on the way
 const winCovers = (cam) => {
@@ -1148,15 +1152,16 @@ function blockFollow(cam) {
   const now = performance.now();
   if (Math.abs(cam.dist - blkDist) > 1e-3 * cam.dist) blkMoved = now;
   blkDist = cam.dist;
-  if (!planet?.wins || winCovers(cam) || blkMaking || switching || building || wantNow || wantSoon || !cam.T || now - blkMoved < 700) return;
+  if (!planet?.wins || winCovers(cam) || blkMaking || switching || building || wantNow || wantSoon || !cam.T || now - blkMoved < BLOCK_WAIT_MS) return;
   // half the screen's diagonal in metres on the ground: a block (28.8 km) holds a view of this reach with its camera within a page of its middle
   if (cam.hh * planetLayer.radiusM * Math.hypot(cam.aspect, 1) > 15000) return;
   const c = planet.wins.cellOf(cam.T), bx = Math.round((c.x - 192) / 64) * 64, by = Math.round((c.y - 192) / 64) * 64;
   if (blk && blk.face === c.face && Math.abs(c.x - (blk.x + 192)) <= 32 && Math.abs(c.y - (blk.y + 192)) <= 32) return;
   blkMaking = true;
-  planet.wins.ensureBlockAt(c.face, bx, by).then((b) => { if (!winCovers(cam)) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err)).finally(() => { blkMaking = false; });
+  planet.wins.ensureBlockAt(c.face, bx, by).then((b) => { tr("block", c.face, bx, by); if (!winCovers(cam)) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err)).finally(() => { blkMaking = false; });
 }
-let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wantNow = null, wantSoon = null, home = null, curWin = null;
+// incoming: the window being made for the page to switch to, from its ask until it is `prepared` (a sweep in between must not take its blocks, or its objects are made again after the switch)
+let curGid = 0, gids = 0, prepared = null, switching = false, building = false, wantNow = null, wantSoon = null, home = null, curWin = null, incoming = null;
 const winSpecs = new Map();
 // n: the source's cells a side (a window's own are 256)
 const winSpec = (cap, n = 256) => {
@@ -1184,11 +1189,11 @@ function sweepBlocks() {
   const keep = new Set();
   let bytes = 0;
   const bytesOf = (r) => (7 * r.cap + 4) * 4;
-  const newest = [...winCache].reverse().sort((a, b) => (b === curWin) - (a === curWin) || (b === prepared?.win) - (a === prepared?.win));
+  const newest = [...winCache].reverse().sort((a, b) => (b === curWin) - (a === curWin) || (b === prepared?.win || b === incoming) - (a === prepared?.win || a === incoming));
   for (const w of newest) {
     if (!w.blockRecs) continue;
     const add = w.blockRecs.filter((r) => !keep.has(r)).reduce((n, r) => n + bytesOf(r), 0);
-    if (bytes + add > BLOCK_BYTES && w !== curWin && w !== prepared?.win) { w.blockRecs = null; continue; }
+    if (bytes + add > BLOCK_BYTES && w !== curWin && w !== prepared?.win && w !== incoming) { w.blockRecs = null; continue; }
     for (const r of w.blockRecs) keep.add(r);
     bytes += add;
   }
@@ -1288,6 +1293,7 @@ const EMPTY_CAP = 1 << 20;
 let emptyObjects = null;
 const emptyBody = () => (emptyObjects ??= { cap: EMPTY_CAP, body: buffer(new Uint32Array(7 * EMPTY_CAP + 4)), start: buffer(new Uint32Array(256 * 256 + 1)) });
 async function groundWant(m) {
+  tr("want", m.mode, m.speculative ? 1 : 0, m.lat, m.lon);
   if (m.speculative) { if (!wantNow) wantSoon = m; } else wantNow = m;
   if (building || !planet?.wins || !S || !home) return;
   building = true;
@@ -1308,6 +1314,7 @@ async function groundWant(m) {
       const fresh = !w;
       if (!w) {
         w = await planet.wins.build(want.lat, want.lon);
+        tr("built", w.id, spec ? 1 : 0);
         keepWindow(w);
         console.info("[win]", w.id, "pages made", w.stats.made, "ms", JSON.stringify(Object.fromEntries(Object.entries(w.stats.ms).map(([k, v]) => [k, Math.round(v)]))), "t", Math.round(performance.now()));
       }
@@ -1317,18 +1324,21 @@ async function groundWant(m) {
         // the page switches to this ground at its next frame: its pages are kept from here (another window's pages made meanwhile would take them, and the switch would make them again with the frames held), and any
         // that a kept window had lost are made now, behind the frames; its folds are traced behind the frames too, while the blocks the view can touch are made
         planet.wins.setPending(w);
+        incoming = w;
         await planet.wins.ensure(w);
         const prep = readyGround(w);
         if (near) await near;
         w.prep = await prep;
+        tr("posted", w.id);
         prepared = { gid: ++gids, mode: "win", win: w };
+        incoming = null;
         post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon, face: w.face, x0: w.x0, y0: w.y0 }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null } });
       }
     }
   } catch (err) {
     console.error("window", err);
     post({ type: "windowError", error: String((err && err.stack) || err) });
-  } finally { building = false; }
+  } finally { building = false; incoming = null; }
 }
 // A window's ground made ready for the switch behind the frames (webgpu.js prepareGround): its folds traced, kept on the window for applyGround. null where there is nothing to hand over (no frame has told the
 // exaggeration yet, a page is missing): the switch then traces the folds in its first frame.
@@ -1379,6 +1389,7 @@ function startObjects(w, view, urgent = true) {
     };
     serialMake(w, urgent, () => planet.wins.makeBlocks(w, blockCache, w.blockView, stage)).then((r) => {
       w.blocksBusy = false;
+      tr("blocksDone", r?.recs?.length ?? 0);
       if (!r) { near.resolve(); return; }
       for (const b of r.fresh) blockAll.add(b);
       w.blockRecs = r.recs; w.blockKd = r.kds; w.blockK0 = r.k0;
@@ -1400,6 +1411,7 @@ let applyMs = 0;
 async function applyGround(p) {
   switching = true;
   const tApply = performance.now();
+  tr("apply", p.mode, !!p.win?.blockRecs);
   try {
     if (p.mode === "win") {
       const w = p.win, o = emptyBody();
@@ -1413,7 +1425,7 @@ async function applyGround(p) {
       w.prep?.cancel(); w.prep = null;
       if (!r.on) throw new Error(`the window's pages are not all there: ${JSON.stringify(r.missing)}`);
       // the pages round the window's, for the planet pass: the block held stays until the new one is made behind the frames (a page it loses to another window takes it away, onBlockLost) and is given to the painter when it is there
-      planet.wins.ensureBlock(w).then((b) => { if (curWin === w) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err));
+      planet.wins.ensureBlock(w).then((b) => { tr("blockw", w.id); if (curWin === w) { R.setBlockPages(b); blk = { face: b.block.face, x: b.block.x0, y: b.block.y0 }; } }).catch((err) => console.warn("block pages", err));
       R.setIce(new Uint8Array(TILES * TILES));
     } else {
       S.win = null; curWin = null;
@@ -1431,7 +1443,7 @@ async function applyGround(p) {
     // the looks the new objects want are asked of the GPU and taken in when they come, not waited for: a frame has no need of them to draw what is already known, and the wait held every frame for as long as the GPU was busy
     if (p.mode === "win") surveyWindow().catch((err) => console.error("survey", err));
     if (p.mode === "win" && p.win.blockPlan && !p.win.blockRecs && !p.win.blocksBusy) startObjects(p.win, lastCam ? viewCells(p.win, lastCam) : undefined);
-  } finally { switching = false; applyMs = performance.now() - tApply; }
+  } finally { switching = false; applyMs = performance.now() - tApply; tr("applied", p.mode, Math.round(applyMs)); }
 }
 let surveying = 0;
 async function surveyWindow() {
@@ -1449,6 +1461,7 @@ async function attachObjects(w) {
   while (switching) await new Promise((r) => setTimeout(r, 5));
   if (curWin !== w || (S.win?.blocks?.length === w.blockRecs.length && S.win.blocks[0]?.body === w.blockRecs[0]?.body)) return;
   switching = true;
+  tr("attach", w.id);
   try {
     S.win = { name: "win", blocks: blockSources(w) };
     await R.setSources(sources());
@@ -1457,6 +1470,7 @@ async function attachObjects(w) {
     w.canopyK0 = w.blockK0;
     R.farBuild(farLevels());
     await surveyWindow();
+    tr("attached", w.id);
   } catch (err) {
     console.error("window objects", err);
     post({ type: "windowError", error: String((err && err.stack) || err) });
@@ -1578,7 +1592,7 @@ function render() {
     // the levels and bearings whose front lists are built, when they change (live.js listsReady)
     const fr = R.frontsReady().join(","), fronts = fr !== frontsSent ? fr : undefined;
     frontsSent = fr;
-    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: doneLift, liftInfo, ground: groundAns, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
+    post({ type: "frameDone", id: f.id, ...windowK0(), tilesMax: R.stats.tilesMax, tilesCut: R.stats.tilesCut, cpuMs: ms, gpuMs: R.stats.gpuMs, passes: R.stats.passes, counts: R.stats.counts, at: performance.now() - t0, fronts, lift: doneLift, liftInfo, ground: groundAns, q: planetQ, relief: planetRelief, applyMs, settled: !planetLayer || planetLayer.settled?.() === true, arriving: !!planetLayer?.arriving?.(), tiles: planet && { ...planet.pyramid.stats, held: planet.pyramid.held(), flying: planet.pyramid.flying() } });
     if (pending) render();
   });
 }

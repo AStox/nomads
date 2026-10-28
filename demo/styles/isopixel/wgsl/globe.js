@@ -106,7 +106,7 @@ struct U {
   bw1: vec4i,
   bw2: vec4i,
   bw3: vec4i,
-  sprl: vec4f,              // x: an upright sprite's share of the key light (live.js spriteLight); y: the share of the tree cover the ground paints as crowns (the rest is drawn as sprites and specks)
+  sprl: vec4f,              // x: an upright sprite's share of the key light (live.js spriteLight); y: the share of the tree cover the ground paints as crowns (the rest is drawn as sprites and specks); z: the level the screen showed before the finest one it has tiles for, w: the share of pixels that have gone over to that one (planet.js)
 }
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var fieldsT: texture_2d_array<u32>;  // a tile's cells, 16 bytes each (pyramid.js)
@@ -920,9 +920,10 @@ fn depthOf(z: f32) -> f32 { return clamp((z - u.zNear) / (u.zFar - u.zNear), 0.0
       useFine = bayer(gX, gY) < u.cf.w * (1.0 - g_smooth(18.75, 56.0, gMpp));
     }
   }
-  // one level of detail on the whole screen: the pixel's level as a fraction, held to the finest level every tile the view reads is held at (u.cf.x, which the page eases up
-  // as they arrive), the tier below and the tier above it told apart by the art pixel's dither, so that a zoom, or a finer tier arriving, cross-fades the whole picture at once
-  let lv = min(levelFor(gMpp), u.cf.x);
+  // one level of detail on the whole screen: the pixel's level as a fraction, held to the finest level every tile the view reads is held at (u.cf.x) or, for the share of pixels that have not yet gone over to
+  // it (the page raises u.sprl.w from 0 to 1 when tiles of a finer level arrive), to the level the screen showed before (u.sprl.z), the tier below and the tier above told apart by the art pixel's dither, so that
+  // a zoom, or a finer tier arriving, cross-fades the whole picture at once
+  let lv = min(levelFor(gMpp), select(u.sprl.z, u.cf.x, h2(gX, gY, 99) < u.sprl.w));
   var want = min(u32(floor(lv)) + select(0u, 1u, bayer(gX, gY) < lv - floor(lv)), TIERS - 1u);
   if (useFine) { want = TIERS - 1u; }
   let tl = tileAt(f, fc.fx, fc.fy, want);

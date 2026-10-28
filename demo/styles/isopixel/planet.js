@@ -9,6 +9,7 @@
 import { CROWN_AT, dqBuild, noiseGrads } from "./ground.wgsl.js";
 import { PAGE_BLOCK, PAGE_GEOM } from "./pages.js";
 import { faceFrac, tierOffset } from "./pyramid.js";
+import { tr } from "./trace.js";
 import { globeWgsl } from "./wgsl/globe.js";
 
 const DEPTH = "depth32float", ART_FORMAT = "rgba8unorm";
@@ -16,8 +17,9 @@ const RING = 4;
 const sm = (a, b, v) => { const t = Math.max(0, Math.min(1, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
 // the screen points a view's tiles are found by, spread over the screen and MARGIN of it beyond each edge (the tiles a pan is about to need)
 const GRID_X = 14, GRID_Y = 10, MARGIN = 0.12;
-// how fast the level the screen shows rises once the tiles of a finer one are held, in levels a second: a cross-fade of about a third of a second
-const CAP_RATE = 3;
+// how long the screen takes to go over to a finer level once the tiles of it are held, whatever the number of levels it gains (one cross-fade of the whole screen from the picture it showed: a jump has no tile
+// at the levels between, which a ramp of levels would sweep through unseen and then show at once) [design: 0.4 s, the operator's 0.3 to 0.5]
+const LEVEL_FADE = 0.4;
 // how fast the whole screen goes over to the fine pages once the view holds them all, in shares a second: about two thirds of a second
 const FINE_RATE = 1.5;
 // the share of a pixel's dither the finer tier must have before its tiles are asked for: under it the screen shows the tier below alone (readyLevel), so a tier asked for over the whole screen at
@@ -192,8 +194,10 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     for (let t = lo; t <= pyramid.tiers - 1; t++) if (Number.isFinite(mo.byTier[t])) top = Math.max(top, mo.byTier[t] + 2 * 0.8 * ((R * Math.PI) / 2 / (256 * 2 ** t)));
     return Math.max(0, top) * 1.05 + 30;
   }
-  // the level the screen shows: down at once (a coarser level is always held), up by CAP_RATE a second
-  let cap = 0, capAt = performance.now(), fine = 0, last = null, drawn = false;
+  // The level the screen shows: down at once (a coarser level is always held), and up, when tiles of a finer one arrive, as one cross-fade of the whole screen: `cap` is the finest level every tile the view reads is
+  // held at (the surface is marched at it, so the picture stands where it will stand), `capA` the level the screen showed before it, and the share `mix` of the pixels (by the hash of the ground's cell, wgsl/globe.js)
+  // that have gone over to cap rises to 1 in LEVEL_FADE. Tiles that arrive during a fade move its end, not its start, unless most of the screen has gone over already (then it starts from where it is).
+  let cap = 0, capA = 0, mix = 1, capAt = performance.now(), fine = 0, last = null, drawn = false;
   // the shell top and level cap the last draw used: what a CPU read of the surface the ray march meets needs to choose the tier a pixel's rays march at (worker.js drawnTier)
   let shown = null;
 
@@ -213,8 +217,14 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     pyramid.want(wantedNow);
     const now = performance.now(), ready = readyLevel(pts), dt = (now - capAt) / 1000, pg = opts.pages?.on ? opts.pages : null;
     // the first picture starts at the level its tiles allow (the ramp is for tiles that arrive after it, not for a cache that already holds them)
-    if (!drawn) { cap = ready; drawn = true; }
-    cap = ready < cap ? ready : Math.min(ready, cap + dt * CAP_RATE);
+    mix = Math.min(1, mix + dt / LEVEL_FADE);
+    if (!drawn) { cap = capA = ready; mix = 1; drawn = true; }
+    else if (ready < cap) { cap = ready; capA = Math.min(capA, cap); }
+    else if (ready > cap) {
+      // the share of pixels that change level at once: those that went over to the old end when the fade starts anew from it, those that have not when the old start is kept and the end moves
+      if (mix >= 1 || (1 - mix) * Math.abs(cap - capA) < mix * (ready - cap)) { capA = cap; mix = 0; }
+      cap = ready;
+    }
     // the whole screen goes over to the fine pages once every point of the view (and its margin) lies in a resident page of the block and the finest tier is held too, never part of it
     // (a block the view outgrows is a patch on the screen), and back at once when it does not
     // the block: the pages the renderer made round the window's (pg.block), or while it is not there the window's own 16 in the middle of it; a page it has not is read as the nearest it has
@@ -255,6 +265,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     const goal = blk && ready >= top && cam.hh * R * Math.hypot(cam.aspect, 1) <= FINE_REACH && pts.every(inPages) ? 1 : 0;
     fine = goal > fine ? Math.min(1, fine + dt * FINE_RATE) : goal;
     capAt = now;
+    if (globalThis.__arr) tr("draw", +cap.toFixed(3), ready, +fine.toFixed(3), goal, wantedNow.length, wantedNow.reduce((n, k) => n + (pyramid.ready(k.t, k.f, k.tx, k.ty) ? 0 : 1), 0), pyramid.flying?.() ?? 0, capA, +mix.toFixed(3));
     const a = artFor(Math.ceil(w / artPx), Math.ceil(h / artPx));
     // close up, where the view is tens of metres or a few kilometres across, the relief it can show lies within a 45 degree slope of the target's height over the view's reach: the shell the rays are
     // marched through ends there rather than at the planet's highest summit, so its few steps land on the ground the view has
@@ -273,7 +284,7 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
     u[52] = cap; u[53] = frameV; u[54] = opts.season ?? 0; u[55] = fine;
     ui[56] = nf.f; u[57] = opts.ortho ?? 0; u[58] = (cam.tanH * cam.dist) / cam.radiusM; ui[59] = 0;
     ui[60] = pg ? 1 : 0; ui[61] = pg?.face ?? 0; ui[62] = pg?.x0 ?? 0; ui[63] = pg?.y0 ?? 0;
-    u[80] = opts.spr ?? 0.6; u[81] = opts.canopy ?? 1;
+    u[80] = opts.spr ?? 0.6; u[81] = opts.canopy ?? 1; u[82] = capA; u[83] = mix;
     ui[64] = blk ? 1 : 0; ui[65] = blk?.x0 ?? 0; ui[66] = blk?.y0 ?? 0; ui[67] = blk?.face ?? 0;
     const r = ring[slot++ % RING], ts = opts.timestampWrites;
     device.queue.writeBuffer(r.buffer, 0, ub);
@@ -323,10 +334,9 @@ export async function createPlanet({ device, format, G, pyramid, pal, radiusM, h
   // True only when drawing again with the same camera and opts would give the same pixels: nothing eased is still moving (the level cap is at the level the view's tiles allow, the share gone over
   // to the fine pages at its goal), no tile the view wants has arrived since the last draw (pyramid.version too, where pyramid.js keeps one, for a neighbour's halo), and the water's frame, which
   // is the only clock the shader reads (opts.frame, else performance.now every 160 ms), is the one drawn. Everything else the shader reads comes in by cam and opts, which the caller compares.
-  const settled = () => {
-    if (!last || cap !== last.ready || fine !== last.goal || (pyramid.version ?? 0) !== last.version) return false;
-    if (last.clocked && (Math.floor(performance.now() / 160) & 7) !== last.frame) return false;
-    return last.held.every(([k, was]) => pyramid.ready(k.t, k.f, k.tx, k.ty) === was) && readyLevel(last.pts) === last.ready;
-  };
-  return { hmax, draw, setLut, setCrown, settled, level: () => cap, shown: () => shown, rising: () => !!last && (cap !== last.ready || fine !== last.goal) };
+  // Whether the picture is still taking in tiles or easing to them (the level fading in, the share gone over to the fine pages, a tile arrived or in flight): the page then sends every frame (live.js frame),
+  // where a still picture's are sent every 250 ms
+  const arriving = () => !last || cap !== last.ready || mix < 1 || fine !== last.goal || (pyramid.version ?? 0) !== last.version || (pyramid.flying?.() ?? 0) > 0 || !last.held.every(([k, was]) => pyramid.ready(k.t, k.f, k.tx, k.ty) === was) || readyLevel(last.pts) !== last.ready;
+  const settled = () => !arriving() && !(last.clocked && (Math.floor(performance.now() / 160) & 7) !== last.frame);
+  return { hmax, draw, setLut, setCrown, settled, arriving, level: () => cap, shown: () => shown, rising: () => !!last && (cap !== last.ready || mix < 1 || fine !== last.goal) };
 }
