@@ -49,7 +49,7 @@ if (import.meta.main) {
     const state = arg("state", join(arg("land-dir", ""), name, "state.i32")), h = i32(state);
     if (h.length !== size * size) throw new Error(`${state}: ${h.length} cells, wanted ${size} x ${size}`);
     const p = await readPlanet(seed, diskStore(STORE, key));
-    emit("region", tier, regionMeasures({ h, size, tier, face, x0: (tx * 256) / down, y0: (ty * 256) / down, planet0: p.height }, log), { name, face, tx, ty });
+    emit("region", tier, regionMeasures({ h, size, tier, face, x0: (tx * 256) / down, y0: (ty * 256) / down, planet0: p.height }, log) as unknown as Record<string, unknown>, { name, face, tx, ty });
   } else if (cmd === "map") {
     const raw = t3(), g = makeGrid(2048, PLANET_RADIUS_M), W = 4096, Hh = 2048, vex = Number(arg("vex", "4")), z = new Float32Array(W * Hh);
     for (let j = 0; j < Hh; j++) for (let i = 0; i < W; i++) {
