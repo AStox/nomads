@@ -155,7 +155,7 @@ describe("region", () => {
     // amplitude 100 m, wavelength 3 km: max slope 2 pi 100 / 3000 = 0.209, 12 degrees at 90 m spacing less a little
     const cls = m.slopeByRelief.filter((c) => c.n > 0);
     expect(cls.length).toBe(1); expect(cls[0].meanRzM).toBeGreaterThan(150); expect(cls[0].slopeDeg).toBeGreaterThan(3); expect(cls[0].slopeDeg).toBeLessThan(8);
-    expect(m.slope50).toBe(0); expect(m.relief10.above1000).toBe(0);
+    expect(m.slope.steepShare).toBe(0); expect(m.slope.p50).toBeGreaterThan(0.05); expect(m.slope.p50).toBeLessThan(0.2); expect(m.relief10.above1000).toBe(0);
   });
   test("the hold's error of a region equal to the planet's means is zero, and one metre off is one metre", () => {
     const per = 32, size = 256, n = size / per, p0 = new Float32Array(6 * 256 * 256), h = new Int32Array(size * size);
