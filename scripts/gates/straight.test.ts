@@ -98,6 +98,10 @@ describe("straight lakes and spits", () => {
     const diag = spitMeasures(field(side, (x, y) => (Math.abs(x - y) < 2.5 ? 50 : -50)), side, CELL);
     expect(diag.strips.n).toBe(1); expect(diag.strips.diag).toBe(1); expect(diag.axisRun64).toBeLessThan(10);
   });
+  test("a sea channel of 8 cells, 150 long, is an inlet strip along an axis", () => {
+    const side = 400, r = run(field(side, (x, y) => (x >= 196 && x < 204 && y >= 100 && y < 250 ? -50 : 50)), side);
+    expect(r.inlets.strips.n).toBe(1); expect(r.inlets.strips.axis).toBe(1); expect(r.inlets.axisRun64).toBeGreaterThan(8 * 140); expect(r.inlets.axisRunKm).toBeGreaterThan((140 * CELL) / 1000);
+  });
   test("the margin crop keeps the middle", () => {
     const side = 8, a = Int32Array.from({ length: 64 }, (_, i) => i), c = crop(a, side, 2);
     expect(c.length).toBe(16); expect(c[0]).toBe(18); expect(c[15]).toBe(45);
