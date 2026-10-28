@@ -24,7 +24,7 @@ const seed = 1, key = arg("key", "7f6ff6c82cdd");
 const name = arg("name", "range"), face = Number(arg("face", "0")), tx = Number(arg("tx", "20")), ty = Number(arg("ty", "12")), tiles = Number(arg("tiles", "12")), TIER = Number(arg("tier", "5"));
 const down = 2 ** (5 - TIER), size5 = tiles * 256, x05 = tx * 256, y05 = ty * 256;
 const size = size5 / down, x0 = x05 / down, y0 = y05 / down, HL = 2, S = size + 2 * HL, cellM = 75 * down, per = 1 << TIER;
-const bake = arg("bake", `/tmp/planet-75m/${seed}-${key}`), LAND = arg("land-dir", process.env.NOMADS_LAND ?? "/tmp/planet-75m/land"), work = `${LAND}/${name}`;
+const bake = arg("bake", `${BAKE}/${seed}-${key}`), landDir = arg("land-dir", process.env.NOMADS_LAND ?? join(BAKE, "land")), work = join(landDir, name);
 mkdirSync(work, { recursive: true });
 const budget = Number(arg("budget", "200")), law = TIER_LAWS[TIER];
 const dtAt = (step: number) => law.dtMy[Math.min(step, law.dtMy.length - 1)];
