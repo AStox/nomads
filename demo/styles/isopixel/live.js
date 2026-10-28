@@ -329,13 +329,14 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     onGround?.(mode);
   }
   // the target's own drift (a pan, a follow) carried 3 s on: the window the view will want then is asked for now, speculatively
-  let panAt = 0, panGeo = null, panV = null;
+  let panAt = 0, panGeo = null, panV = null, jumpAt = -1e9;
   function panAhead(view, now) {
     if (!view.geo) return;
     if (panGeo && now > panAt) {
       const dt = (now - panAt) / 1000, vl = (view.geo.lat - panGeo.lat) / dt, vo = (view.geo.lon - panGeo.lon) / dt;
       // a jump (the target lands more than two screens from where it was a frame ago) is no drift: carried three seconds on it asked for a window at every place on the way to the target, 40 asks in the first second
       const step = Math.hypot(view.geo.lat - panGeo.lat, (view.geo.lon - panGeo.lon) * Math.cos(view.geo.lat * D2R)) * D2R * PR;
+      if (step > 2 * viewExtent(view)) jumpAt = now;
       panV = step > 2 * viewExtent(view) ? null : panV ? { lat: panV.lat * 0.8 + vl * 0.2, lon: panV.lon * 0.8 + vo * 0.2 } : { lat: vl, lon: vo };
     }
     panGeo = { lat: view.geo.lat, lon: view.geo.lon };
@@ -512,6 +513,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // The pyr the page uses eases to the worker's with time constant LIFT_TAU: it changes by tens of metres a frame as the target crosses relief and tiles arrive, and a held point solved for each jump moves the target by
   // as much as the jump is worth in pixels (a lurch in a drag over a mountain); the lift need only stand above the ground, which an average over the view's box does within the relief it smooths.
   // [design: 350 ms, as LAT_TAU, the lattice's glide]
+  // how long after a jump a finer level's arrival takes the lift at once; in a drag the surface's step is eased as the target's own relief is [design: the arrival of a far jump's tiers, 1.5 s]
+  const LIFT_JUMP_MS = 1500;
   const LIFT_TAU = 350;
   let liftLatch = null, liftAt = 0;
   function easeLift(I, now) {
@@ -520,7 +523,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     liftAt = now;
     // tiles of a finer level have arrived (the surface the planet pass marches changes at once, wgsl/globe.js gMarch): the camera stands at the height of that surface from this frame, not eased to it, or the picture
     // slides by the difference while the finer level fades in (a far jump: 130 m at A, a screen's width and more at zoom 3)
-    if (!L || !Number.isFinite(L.pyr) || !Number.isFinite(I.box) || I.tier > L.tier) return { ...I };
+    if (!L || !Number.isFinite(L.pyr) || !Number.isFinite(I.box) || (I.tier > L.tier && now - jumpAt < LIFT_JUMP_MS)) return { ...I };
     const dlon = ((I.lon - L.lon + 540) % 360) - 180;
     return Math.hypot((I.lat - L.lat) * D2R * PR, dlon * D2R * PR * Math.cos(I.lat * D2R)) < L.box ? { ...I, pyr: L.pyr + (I.pyr - L.pyr) * a } : { ...I };
   }
