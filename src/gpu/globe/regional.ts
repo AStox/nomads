@@ -131,9 +131,29 @@ function children2(parent: ArrayLike<number>, from: number, out: Float64Array, a
     }
   }
 }
+// The carry's limiter: the four children `w` of a cell (whole 1/256 m units, the bilinear children carried and rounded) are held between the least and the greatest of the cell's own 3 x 3
+// neighbourhood at the tier above (`lo`, `hi`: floor and ceiling, so a parent that is not a whole unit still fits), then the parent's mean is restored, `sum4` being the children's total
+// (4 times the parent, rounded): the miss is spread over the children that can still move, a share each, the first to the remainder, again until it is spent or every child is at a bound.
+// A mean-preserving carry of a step rings (a spit of +130 m on the high side of a 750 m cliff, a sea strip beside it): the bound is the local-extremum bound of a limited reconstruction
+// (Barth and Jespersen 1989, AIAA 89-0366; Harten, Engquist, Osher and Chakravarthy 1987, ENO), whose result is never outside what the parent saw round it. Integers only.
+export function limitChildren(w: number[], sum4: number, lo: number, hi: number) {
+  const L = Math.floor(lo), H = Math.ceil(hi), free = [false, false, false, false];
+  let sum = 0;
+  for (let k = 0; k < 4; k++) { w[k] = Math.min(H, Math.max(L, w[k])); sum += w[k]; }
+  for (let d = sum4 - sum; d !== 0; ) {
+    let nf = 0;
+    for (let k = 0; k < 4; k++) { free[k] = d > 0 ? w[k] < H : w[k] > L; if (free[k]) nf++; }
+    if (nf === 0) break;
+    const q = Math.floor(d / nf), rem = d - q * nf;
+    let at = 0, moved = 0;
+    for (let k = 0; k < 4; k++) if (free[k]) { const nw = Math.min(H, Math.max(L, w[k] + q + (at++ < rem ? 1 : 0))); moved += nw - w[k]; w[k] = nw; }
+    d -= moved;
+  }
+}
 // A field at tier `from` (1/256 m) carried to the next tier: the bilinear children, then what is left of each parent's height (its height less the children's mean) is carried
 // down the same way, `passes` times, so that the children's means come to the parents' without a constant to a block (a constant is a step of up to 100 m at the block's
-// edge on a range: measured); the last whole-unit constant, which is then under a unit, makes the children of every cell sum to 4 times its height exactly [design, R1761].
+// edge on a range: measured); the last whole-unit constant, which is then under a unit, makes the children of every cell sum to 4 times its height exactly [design, R1761]. With
+// passes the children are limited (limitChildren: inside the range of the parent's 3 x 3 neighbourhood, the mean kept where that range allows); `passes` = 0 is the plain remap.
 export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4): Int32Array {
   const n = CELLS0 << (2 * from), c = new Float64Array(4 * n), out = new Int32Array(4 * n), fnp = 256 << from, fn = fnp * 2, cells = fnp * fnp;
   if (parent.length !== n) throw new Error(`refineSmooth: tier ${from} holds ${n} cells, got ${parent.length}`);
@@ -148,10 +168,23 @@ export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4
       for (let i = 0; i < c.length; i++) c[i] += corr[i];
     }
   }
+  const gp = tierGrid(from), ids = new Int32Array(9);
   for (let f = 0; f < FACES; f++)
     for (let Y = 0; Y < fnp; Y++)
       for (let X = 0; X < fnp; X++) {
         const p = f * cells + Y * fnp + X, o = (f * fn + 2 * Y) * fn + 2 * X, v = [Math.round(c[o]), Math.round(c[o + 1]), Math.round(c[o + fn]), Math.round(c[o + fn + 1])];
+        if (passes > 0) {
+          let lo = parent[p], hi = lo;
+          if (X > 0 && X < fnp - 1 && Y > 0 && Y < fnp - 1) {
+            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const u = parent[p + dy * fnp + dx]; if (u < lo) lo = u; if (u > hi) hi = u; }
+          } else {
+            around3(gp, f, X, Y, ids);
+            for (let k = 0; k < 9; k++) if (ids[k] >= 0) { const u = parent[ids[k]]; if (u < lo) lo = u; if (u > hi) hi = u; }
+          }
+          limitChildren(v, Math.round(parent[p] * 4), lo, hi);
+          out[o] = v[0]; out[o + 1] = v[1]; out[o + fn] = v[2]; out[o + fn + 1] = v[3];
+          continue;
+        }
         const d = Math.round(parent[p] * 4) - (v[0] + v[1] + v[2] + v[3]), base4 = Math.floor(d / 4), rem = d - base4 * 4;
         out[o] = v[0] + base4 + (0 < rem ? 1 : 0); out[o + 1] = v[1] + base4 + (1 < rem ? 1 : 0); out[o + fn] = v[2] + base4 + (2 < rem ? 1 : 0); out[o + fn + 1] = v[3] + base4 + (3 < rem ? 1 : 0);
       }

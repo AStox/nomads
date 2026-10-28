@@ -23,7 +23,7 @@ import { join } from "node:path";
 import type { Gpu } from "../device";
 import { TILE, tierGrid, type Grid } from "./grid";
 import { cellAcross, patchAt, type Patch } from "./patch";
-import { CORNER_BESIDE, around3, child4, creepSubsOf, type RouteLaw } from "./regional";
+import { CORNER_BESIDE, around3, child4, creepSubsOf, limitChildren, type RouteLaw } from "./regional";
 import { BAND_FLAG_CARRY } from "../wgsl/globe-band-hold";
 import { FLOW_NEIGHBOURS, SOLVE_SWEEPS } from "../wgsl/globe-regional";
 import { RegionalPatch, TREE, PATCH_HALO } from "./regional-patch";
@@ -41,8 +41,8 @@ const INF = 0x7fffffff;
 
 // ---------- the carry to the next tier, a block at a time ----------
 // refineSmooth (regional.ts) for the children of the block of cells `p.interior` square at tier `from`, with p's halo wide enough (the passes reach `passes + 1` cells): the same stencil
-// (child4) on the same neighbours (around3, the corner's missing cell the mean of the two beside it) and the same sums in the same order, so the values are the in-memory function's.
-// Returns the children as an interior * 2 square, row by row.
+// (child4) on the same neighbours (around3, the corner's missing cell the mean of the two beside it) and the same sums in the same order, so the values are the in-memory function's; the
+// limiter (limitChildren) takes its range from the same neighbours (the missing corner cell adds none). Returns the children as an interior * 2 square, row by row.
 export function refineBlock(parent: ArrayLike<number>, from: number, p: Patch, passes = 4): Int32Array {
   const S = p.side, gp = tierGrid(from), n = gp.fn, cells = n * n, nc = S * S, ids9 = new Int32Array(9), q = new Float64Array(4), v = new Float64Array(9);
   const across = new Map<number, number>();
@@ -89,6 +89,13 @@ export function refineBlock(parent: ArrayLike<number>, from: number, p: Patch, p
       const k = (y + p.halo) * S + x + p.halo, o = 2 * y * ic + 2 * x;
       const w = [Math.round(c[4 * k]), Math.round(c[4 * k + 1]), Math.round(c[4 * k + 2]), Math.round(c[4 * k + 3])];
       if (!(w[0] === w[0] && w[1] === w[1] && w[2] === w[2] && w[3] === w[3])) throw new Error("refineBlock: the halo is too narrow for the passes");
+      if (passes > 0) {
+        let lo = val[k], hi = lo;
+        for (let q9 = 0; q9 < 9; q9++) { const j = nb[k * 9 + q9]; if (j >= 0) { const u = val[j]; if (u < lo) lo = u; if (u > hi) hi = u; } }
+        limitChildren(w, Math.round(val[k] * 4), lo, hi);
+        out[o] = w[0]; out[o + 1] = w[1]; out[o + ic] = w[2]; out[o + ic + 1] = w[3];
+        continue;
+      }
       const d = Math.round(val[k] * 4) - (w[0] + w[1] + w[2] + w[3]), base4 = Math.floor(d / 4), rem = d - base4 * 4;
       out[o] = w[0] + base4 + (0 < rem ? 1 : 0); out[o + 1] = w[1] + base4 + (1 < rem ? 1 : 0); out[o + ic] = w[2] + base4 + (2 < rem ? 1 : 0); out[o + ic + 1] = w[3] + base4 + (3 < rem ? 1 : 0);
     }
