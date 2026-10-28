@@ -10,6 +10,7 @@ import { releaseGpu, theGpu } from "../device";
 import { defaultParams } from "./erosion";
 import { FACES, centre, tierGrid, type Grid } from "./grid";
 import { patchAt } from "./patch";
+import { RegionalPatch } from "./regional-patch";
 import { Regional, refineSmooth, remapHeights, tierTable, type RouteLaw } from "./regional";
 import { StreamedTier, refineBlock, type StreamOptions } from "./tiers-stream";
 import type { Planet } from "./window";
@@ -152,5 +153,29 @@ describe("the streamed step", () => {
     done.release();
     expect(same(words(readFileSync(join(dir2, "h.cells"))), want.height)).toBe(-1);
     expect(same(words(readFileSync(join(dir2, "acc.cells"))), want.acc)).toBe(-1);
+  }, 280_000);
+});
+
+describe("the band hold's loss moment over many tallies", () => {
+  test("200 tallies of a loss with every digit at 63 keep the exact moment (bpnorm folds the 32-bit digit sums), where unfolded sums pass 2^31", async () => {
+    const gpu = await theGpu(), planet = planetOf0(), table = tierTable(planet, 2, defaultParams({ dtYr: 1e6 }), true), p = patchAt(2, 0, 256, 256, 1, 256), N = p.side * p.side, NP = 6 * 256 * 256;
+    const s = new RegionalPatch(gpu, 2, 256, table, 1, 8, 0, 8, 1, 2);
+    try {
+      s.setPatch(p); s.write("H", new Int32Array(N).fill(256000)); s.write("ER", new Int32Array(N).fill(0x3ffff));
+      s.go(["bgnbr", "bpzero", "btallyl"]);
+      const raw = await s.readParents(), moment = (w: Int32Array) => Array.from({ length: NP }, (_, i) => (BigInt(w[5 * NP + i]) << 18n) + (BigInt(w[4 * NP + i]) << 12n) + (BigInt(w[NP + i]) << 6n) + BigInt(w[i]));
+      const one = moment(raw);
+      let most = 0;
+      for (let i = 0; i < NP; i++) most = Math.max(most, raw[i]);
+      expect(most * 200).toBeGreaterThan(2 ** 31);
+      s.go(["bpzero"]);
+      for (let k = 0; k < 200; k++) s.go(["btallyl", "bpnorm"]);
+      const many = moment(await s.readParents());
+      let wrong = 0, live = 0;
+      for (let i = 0; i < NP; i++) { if (one[i] !== 0n) live++; if (many[i] !== 200n * one[i]) wrong++; }
+      expect(live).toBeGreaterThan(100);
+      expect(wrong).toBe(0);
+      expect((await s.counter("flags")) & 8).toBe(0);
+    } finally { s.release(); }
   }, 280_000);
 });

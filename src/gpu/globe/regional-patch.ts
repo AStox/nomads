@@ -13,7 +13,7 @@ const NP = 6 * 256 * 256;
 export const PATCH_HALO = 1;
 // entry points that run as one workgroup (the walks over the depths) and those over the tier-0 cells
 const SINGLE: Record<string, true> = { lvscan: true, area: true, area64: true, areaS64: true, reach64: true, incise: true, incisep: true };
-const PARENT: Record<string, true> = { pzero: true, pstzero: true, pmean: true, psolve: true, psolve2: true, pcarry: true, bgnbr: true, bpzero: true, bpstzero: true, bpmean: true, bpsolve: true, bpsolve2: true, bpcarry: true };
+const PARENT: Record<string, true> = { pzero: true, pstzero: true, pmean: true, psolve: true, psolve2: true, pcarry: true, bgnbr: true, bpzero: true, bpstzero: true, bpmean: true, bpsolve: true, bpsolve2: true, bpcarry: true, bpnorm: true };
 // the tier-0 tables in AT after the flooded surface's block: loss, land count, carry, coefficients, rises (one word a tier-0 cell each), the stencil (nine words), the second coefficients
 export const PARENT_WORDS = 15;
 export type Step = string | readonly [string, number];
