@@ -1,6 +1,6 @@
-# Globe e2e tester issues (round 25 state, rebuilt)
+# Globe e2e tester issues (round 26 (restored planet, rebuilt harness))
 
-Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round 25, build 14f4382). 20 issues. Harness rebuilt under ~/.cache/nomads-scratch/e2e.
+Round 26 on the RESTORED planet (key 1121d207f3b8 rebaked after the /tmp wipe; main 1f6ffd1, site files 06:58 ET Oct 28), with the rebuilt harness (new session.ts: thresholds are mine, not comparable with rounds 1 to 25; the first tester's analyze.ts is gone, so seam, ground-slip and stuck-texture detectors were not run). 4 sessions (seeds 202 to 205 at 1280x800, 1920x1080, 800x1000, 1280x800, 150 s each, real mouse wheel, drag, keys and hour slider at random places), 12 edge and corner drags, 18 wheel bursts, 12 arrivals, 24 orbit drags, an A hand-over ladder, and stills at A, B, D, R (8.32 N 88.30 E and 12.02 N 83.89 E), K3 sea (25 N 15 E), E2, the home island and the opening place. Everything matches round 25: same places, same look, same numbers. 20 issues: 8 fixed, 8 improved, 4 open. No crash, no device loss, no frame gap over 34 ms, no console error except aborted tile requests.
 
 ## 1. Dragging lurches the picture by up to a whole screen between two frames
 - Severity: visibly broken
@@ -8,14 +8,16 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: fixed on 6581570 for orbit as well: slow drags at zoom -5 to -5.7 from the pole (89.96 N 4.5 E), 42 N 19.9 W, 65 N, 83 S, the equator and 75 N at 1280x800 and 800x1000: the grabbed place stays under the mouse (0 to 0.3 px) in 40 of 48 drags, and 6 to 20 px off only in slow east drags at the pole and 65 N when the mouse nears the planet's edge; largest step 11 px; no 150 to 466 px jumps in 48 drags or in the 4 sessions (seeds 84 to 87). Fast drags that leave the planet disc leave the grab behind, as expected
 - Matches fixlist: new (near fixlist 3.1 and 4.5, but not the same: zoom -2.5 to 2.4, no window change)
 - Repro: seed 9, 1280x800, 76.0 s: left drag west at y 405 at zoom -2.5, bearing 0, near 0N 65E; lat -0.94 to 11.08 in two frames. seed 2, 1280x800, 93.8 s: zoom 0.49, bearing 1.0, lon 40.54 to 37.12 in one frame (HUD shows both). seed 7, 1920x1080, 113 to 126 s: jitter drags at zoom -0.1, ground 100 to 693 px per 100 ms for 3 to 8 px of mouse. Round 6: seed 42, 800x1000, frames k663 (pivot moved 251 px in one frame) and k793 (ground moved 94 px in 100 ms for 2 px of mouse), zoom -5.7, lat 86 to 89.7, after escapePole. ROUND 7, where each one starts. (1) Window switch: seed 47, 1280x800, 58.78 s, zoom 2.76, 15.77 N 7.44 W, midWalk drag: the pivot's screen place goes from y 1004 to y 29 in one frame (975 px) for 9 px of mouse, exactly when the window id changes 0:3328:5376 to 0:3264:5440 (both 64 cell steps); the picture there is open sea so the jump is not visible, the API pivot jumps. (2) Face switch: seed 46, 800x1000, 93.6 s, zoom 2.0 to 2.46, 25.15 N 29.98 E: pivot moved 363 px in one frame when the window id goes 0:6720:6528 to 1:1152:5824 (window of face 0 to a window of face 1; the face edge is at 45 E, the window of face 1 is made 15 degrees before it). (3) Cube corner at zoom 3: dragedge.ts CO (35.26 N 45 E), window mode, mouse step 34 of 40, mouse at 760,520, view 35.387 N 44.861 E (0.15 degrees from the corner): the grabbed ground jumps 432.6 px in one frame and stays 432.6 px off the mouse for the rest of the drag. (4) Cube corner at zoom -2, 0, 1.5: CS (35.26 S 135 E), mouse steps 1 to 20 are 1:1 or off by up to 19 px a step, from mouse step 21 (the first step after the reversal, view crossing 35.2 S 135.0 E) the ground stays 18 px off every step, then one frame of 321 px at zoom -2 (step 26, view 39.02 S 125.07 E), 210 px at zoom 0 (step 30, view 35.79 S 133.70 E), 217 px at zoom 1.5 (step 30); the mouse ends 196 to 265 px from the grabbed ground after going out and back. CO at zoom -2 to 1.5: off by 8 to 15 px for 8 to 16 steps from step 3 and 145 to 215 px at the end. (5) Pole edge at zoom -2, 0, 1.5: PE (45 N 0 E, the edge of the north pole face): from step 21, when the view crosses 45.0 N going north, the ground does not move for 11 mouse steps (about 22 px a step too little), then follows again; the mouse ends 169 to 209 px off. (6) Poles at orbit and mid zoom: seed 45, 1920x1080, 114.5 s zoom -5.26 at 83 S: ground moved 376 px in 100 ms for 40 px of mouse; 114.9 s at 89.7 S 236 px for 30 px; 119.2 s zoom -2.55 at 88.6 S 176 px for 21 px; seed 44 12.3 s 379 px at 78 N and seed 47 33.9 s 386 px at 54 N zoom -5.68. Clean: the lon 45 edge (EQ 13.27 N 45 E): max step error 6.1, 4.4, 3.0 px at zoom -2, 0, 1.5, and 0 px at zoom 3 and 4.5 (window mode), and at the PE, CS corners at zoom 3 and 4.5 (0 px). The pivot in dragedge is the pick at the cursor on mouse down; geo is not given by groundUnder in window mode (zoom 3 and up), the window x,z is. Round 15: seed 78, 800x1000, frames k162, k225, k277, k321, k344 (14 to 30 s), zoom -5.7, goPlace steps starting near the pole.
+- Expected: 
 - Evidence: evid/limb-jump-strip-s9.jpg, evid/drag-lurch-s2.jpg, evid/lurch-s32.jpg, evid/drag-lurch-pole-s42.jpg, evid/lurch-window-switch-s47.jpg, evid/lurch-face-switch-s46.jpg, evid/pole-spin-s45.jpg, evid/orbit-pole-jump-s78.jpg, evid/orbit-jump-s77.jpg, evid/orbit-roll-n42-r17.jpg
 
 ## 2. The ground under the cursor does not stay under it while wheeling below zoom 2
 - Severity: visibly broken
-- Seen: every single tick measured at zoom -2 to 1.9 (15 of 15), at all five test places. At zoom 3.2 and above it was exact (0 px) in 27 of 30 ticks, 3 were flat ground where the tracker could not tell. Round 7, wheel bursts with the cursor held: ground under the cursor drifted 107 px (seed 44, zoom 2.15 to -0.33), 99 px (seed 47, 5.47 to -0.99), 77 px (seed 45, 2.12 to 6.55), 61 px (seed 44, 3.43 to 1.79). The API check read 616 px (seed 44, zoom 4.0) and 195 px (seed 46, zoom -5.7). Round 8: wheel bursts drifted less: 53, 48, 44, 33, 30 px (round 7: up to 107). Round 9: bursts 99 px (seed 55, zoom -0.7 to 3.25), 36, 34, 30 px. Round 10 bursts: 101 px (seed 59, zoom 8.49 to -0.8), 82 px (seed 59, 0.22 to 2.72), 78 px (seed 59, 4.91 to 5.27, at 12.4 N 83.8 E in forest, so the tracker may be wrong), 50 px (seed 57), 37 px, 25 px. API check outliers: 44.8 px (seed 57), 35.7 px (seed 59). Round 11 bursts: 327 px (seed 60, 55.3 s, zoom -0.57 to 3.88, a new worst), 48 px (seed 61), 38 px, 31 px, 29 px, 28 px. Round 13 bursts: 99, 97, 96, 78, 57, 56 px (seeds 68 to 70), 47, 30 px (seed 71). Single ticks A exact 0 to 1 px, B zoom -2 32 px, B zoom 0 2 px. Round 14 bursts: 98, 60, 36 px (seeds 73, 75); single ticks exact at A, B zoom -2 32 px. Round 15 bursts: 140 px (seed 76, 78.5 s, zoom 2.68 to 2.3, a burst of only 0.4 zoom), 111 px (seed 77), 73 px, 49 px; B zoom -2 single tick 30 px. Round 16 bursts: 87, 85, 51, 48, 43 px; B zoom -2 single tick 32 px. Round 17: burst test 0 to 4.3 px; sessions 49 px at most. Round 18 (same site files, 4 more sessions seeds 88 to 91): image-tracked bursts that cross zoom 0 to -1 drift 77 px (seed 88, 27.2 s, zoom 4.67 to -0.15) and 41 px (seed 91, 0.54 to -0.3); the burst test inside zoom -0.6 to 5 stays under 4.3 px, so the remaining drift is in bursts that run through the zoom -1 to 0 hand-over (the tracker may be misled there). Round 20: image drift worst 46 px (seed 96, burst across zoom -0.93 to -0.22); A and B single ticks as before (A 0 to 1 px, B zoom -2 35 px by image, 0.5 by API). Round 22 bursts: 315 px (seed 104, 88.1 s, zoom -0.92 to 1.01), 73 px, 46 px, 44 px. Round 23: burst test 0 to 1.8 px; sessions worst 63 px. Round 24: A and B single ticks as before (A 0 to 1 px, B zoom -2 64 px by image, 0.5 by API); sessions' worst bursts 148 px (seed 114, zoom 0.46 to 7.6), 51 px, 45 px. Round 25: sessions' wheel bursts worst 127 px (seed 117, 50 s, zoom -0.68 to 0.0), 82 px (seed 119), 61, 51, 41 px.
+- Seen: every single tick measured at zoom -2 to 1.9 (15 of 15), at all five test places. At zoom 3.2 and above it was exact (0 px) in 27 of 30 ticks, 3 were flat ground where the tracker could not tell. Round 7, wheel bursts with the cursor held: ground under the cursor drifted 107 px (seed 44, zoom 2.15 to -0.33), 99 px (seed 47, 5.47 to -0.99), 77 px (seed 45, 2.12 to 6.55), 61 px (seed 44, 3.43 to 1.79). The API check read 616 px (seed 44, zoom 4.0) and 195 px (seed 46, zoom -5.7). Round 8: wheel bursts drifted less: 53, 48, 44, 33, 30 px (round 7: up to 107). Round 9: bursts 99 px (seed 55, zoom -0.7 to 3.25), 36, 34, 30 px. Round 10 bursts: 101 px (seed 59, zoom 8.49 to -0.8), 82 px (seed 59, 0.22 to 2.72), 78 px (seed 59, 4.91 to 5.27, at 12.4 N 83.8 E in forest, so the tracker may be wrong), 50 px (seed 57), 37 px, 25 px. API check outliers: 44.8 px (seed 57), 35.7 px (seed 59). Round 11 bursts: 327 px (seed 60, 55.3 s, zoom -0.57 to 3.88, a new worst), 48 px (seed 61), 38 px, 31 px, 29 px, 28 px. Round 13 bursts: 99, 97, 96, 78, 57, 56 px (seeds 68 to 70), 47, 30 px (seed 71). Single ticks A exact 0 to 1 px, B zoom -2 32 px, B zoom 0 2 px. Round 14 bursts: 98, 60, 36 px (seeds 73, 75); single ticks exact at A, B zoom -2 32 px. Round 15 bursts: 140 px (seed 76, 78.5 s, zoom 2.68 to 2.3, a burst of only 0.4 zoom), 111 px (seed 77), 73 px, 49 px; B zoom -2 single tick 30 px. Round 16 bursts: 87, 85, 51, 48, 43 px; B zoom -2 single tick 32 px. Round 17: burst test 0 to 4.3 px; sessions 49 px at most. Round 18 (same site files, 4 more sessions seeds 88 to 91): image-tracked bursts that cross zoom 0 to -1 drift 77 px (seed 88, 27.2 s, zoom 4.67 to -0.15) and 41 px (seed 91, 0.54 to -0.3); the burst test inside zoom -0.6 to 5 stays under 4.3 px, so the remaining drift is in bursts that run through the zoom -1 to 0 hand-over (the tracker may be misled there). Round 20: image drift worst 46 px (seed 96, burst across zoom -0.93 to -0.22); A and B single ticks as before (A 0 to 1 px, B zoom -2 35 px by image, 0.5 by API). Round 22 bursts: 315 px (seed 104, 88.1 s, zoom -0.92 to 1.01), 73 px, 46 px, 44 px. Round 23: burst test 0 to 1.8 px; sessions worst 63 px. Round 24: A and B single ticks as before (A 0 to 1 px, B zoom -2 64 px by image, 0.5 by API); sessions' worst bursts 148 px (seed 114, zoom 0.46 to 7.6), 51 px, 45 px. Round 25: sessions' wheel bursts worst 127 px (seed 117, 50 s, zoom -0.68 to 0.0), 82 px (seed 119), 61, 51, 41 px. Round 26: controlled bursts 0 to 0.6 px (18 bursts through zoom 0 to -1 at B, A, R, home, M, E2). Random-session bursts below zoom 2.9 (API pick): worst 52 px (seed 202 at orbit zoom -5.2 to -5.7), 44 px (seed 203, zoom -1.1 to 0.1), 31 px (seeds 204, 205). Above zoom 3 my API check is invalid after a window swap (window x,z move), so those numbers are not used.
 - Status: improved: bursts hold in the burst test (round 23). Single ticks: A within 1 px at every cursor; R lower left within 2 px. B (35.9 S 43.6 E) at the lower left cursor (330,600): picture drifts 64 px at zoom -2 (API 0), 16 px at zoom 0 (API 7.6), 96 px at zoom 1.5 (API 13) on 14f4382; at the centre or right cursors 1 to 10 px. So at B the picture and the pick disagree for cursors at the near (lower left) side, the lead's B zoom 1.5 case not fixed from the picture side
 - Matches fixlist: new (related to 4.5, relief picks)
 - Repro: anchortest.ts: places A, B, M, R, E2, zoom start -2, 0, 1.5, one wheel tick of -100 at cursor 640,400 / 900,300 / 330,600; results in /tmp/globe-e2e/anchor/results-*.json (A z0 -> 88 px, B z0 -> 96 px, B z1.5 -> 95 px) Round 7: seed 44 at 8.7 s, seed 47 at 27.8 s, seed 45 at 48.5 s (a burst of several wheel ticks at a held cursor). Round 11: seed 60, 1280x800, 55.3 s, burst from zoom -0.57 to 3.88 at a held cursor.
+- Expected: 
 - Evidence: evid/anchor-snap-s7.jpg
 
 ## 3. The north pole and everything above about 75 N is empty at every zoom
@@ -24,6 +26,7 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: open, unchanged in round 11 (89.6 N 10 E zoom 4: flat navy at 02:00, 06:15, 08:00)
 - Matches fixlist: fixlist 4.1 (north pole dark), worse: the picture is blank, not dark
 - Repro: look.ts 89.6,10 at zoom 8;4;0, and 60..85,10 at zoom 3. seed 10, 1280x800, 39 to 46 s: from lat 40 to 89.99 by drags and wheel out.
+- Expected: 
 - Evidence: evid/look-pole.jpg, evid/look-lat.jpg, evid/look3.jpg, evid/night-pole-0200.jpg, evid/pole-r10.jpg
 
 ## 4. A straight seam where the ground detail changes
@@ -32,6 +35,7 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: not seen on the new planet at the old repro places (1.9 S 64.9 E, 5.7 S 66.5 E zoom 0.6 to 0.82); the seam-detector hits in 4 sessions were natural bands. Not counted as fixed (the data changed, the cause may remain)
 - Matches fixlist: new (R6, one level of detail across the screen)
 - Repro: seed 8, 800x1000, step at about 41 s: drag at zoom 0.16, bearing 0, near 2.9 S 66.7 E, frames k413 to k416 Round 7: seed 44, 1280x800, frames k1003 to k1007 (85 s), zoom 2.78. Round 12: seed 67, 1280x800, frames k1067 to k1071 (about 90 s), zoom 0.82, near 1.9 S 64.9 E.
+- Expected: 
 - Evidence: evid/seam-s8.jpg, evid/seam-s44.jpg, evid/seam-h-s67.jpg
 
 ## 5. Sea is a flat, very dark colour at close zoom and its dot lattice stays fixed to the screen
@@ -40,15 +44,17 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: improved: waves now show at every zoom from -1 up (25 N 15 E zoom 0 to 3 and 15.02 N 71.76 W zoom 0 to 8.27, sun 10:20 and 12:08): soft elongated cloud-like pale crests on dark blue, all lined up in one direction (wind-aligned), evid/waves-25N15E-r24.jpg, evid/waves-15N71W-r24.jpg. They look like a sea, not blotchy, a little uniform in direction and size. Zoom -2 and out is still a smooth gradient (evid/waves-25N15E-low-r24.jpg). The pan test locks onto the drag at zoom 3 and up (corr 0.91 to 0.98, screen-fixed 0.0); at zoom 0 to 2 pan 2 and 10 px locks (0.90 to 0.98), 40 px locks at 0.57 to 0.92, so no lattice
 - Matches fixlist: lattice: fixlist 2.1 (known). Flat and dark colour: new
 - Repro: look.ts 15.02,-71.76 zoom 8.27;3;0. seed 17, 1280x800, 21 to 53 s, zoom 3 to 6.7; frame k327 Round 6: look.ts 25,15 zoom 0;-2, seed 41, 1920x1080, 52 to 69 s, zoom 6.06.
+- Expected: 
 - Evidence: evid/look-sea.jpg, evid/sea-flat-s17.jpg, evid/sea-lattice-s17.jpg, evid/sea-lattice-s24.jpg, evid/sea-moire-rings.jpg, evid/night-sea-s53.jpg, evid/sea-r10.jpg, evid/sea-noon-r21.jpg, evid/sea-z9-r21.jpg, evid/sea-flat-day-s103-r21.jpg, evid/sea-low-r22.jpg, evid/waves-25N15E-r24.jpg, evid/waves-15N71W-r24.jpg, evid/waves-25N15E-low-r24.jpg
 
 ## 6. Orange parallel lines (dry beds) lie over slopes, forest and sand, up to the whole screen
 - Severity: noticeable
-- Seen: Round 6: whole screen covered, seed 40, 1280x800, about 55 s at 47.86 N 37.77 E, zoom 3.2 to 3.5 (vertical lines over the whole picture, a diagonal band, lines also over the sand). Earlier: seed 2 and a direct look at 47.49 N 38.13 E showed it on a river strip. Round 7 (build 6749586): still on most land at zoom 2.7 to 5, seed 44 frames k1005 and k1273, 1280x800. Round 14: parallel orange diagonal lines about 150 px apart across the whole screen at B zoom 6 (dry beds of the washboard). Round 16: B zoom 6 lines remain (the lead says new bake data).
+- Seen: Round 6: whole screen covered, seed 40, 1280x800, about 55 s at 47.86 N 37.77 E, zoom 3.2 to 3.5 (vertical lines over the whole picture, a diagonal band, lines also over the sand). Earlier: seed 2 and a direct look at 47.49 N 38.13 E showed it on a river strip. Round 7 (build 6749586): still on most land at zoom 2.7 to 5, seed 44 frames k1005 and k1273, 1280x800. Round 14: parallel orange diagonal lines about 150 px apart across the whole screen at B zoom 6 (dry beds of the washboard). Round 16: B zoom 6 lines remain (the lead says new bake data). Round 26: B zoom 6 diagonal orange lines still there on the restored planet (evid/restored-B-r26.jpg fourth still).
 - Status: mostly improved, but a regression at zoom 6: parallel orange lines, evenly spaced, run diagonally across the whole screen at B 35.9 S 43.59 E zoom 6 (e59df3f, evid/B-z6-orange-r14.jpg). They were not there at zoom 3 to 5 at B
 - Matches fixlist: new (plan note 'orange lines on slopes', measured but not fixed)
 - Repro: look.ts 47.49,38.13 zoom 4;5.7;7 at hour 13. seed 2 frames k176 to k178 (about 20 s) Round 6: seed 40, 1280x800, frames k523 to k525 (about 55 s), zoom 3.25 to 3.5, near 47.86 N 37.77 E, just before the forest fills the screen.
-- Evidence: evid/look-plain.jpg, evid/grey-plain-s2.jpg, evid/orange-lines-s40.jpg, evid/orange-r10.jpg, evid/streams-r11.jpg, evid/B-z6-orange-r14.jpg
+- Expected: 
+- Evidence: evid/look-plain.jpg, evid/grey-plain-s2.jpg, evid/orange-lines-s40.jpg, evid/orange-r10.jpg, evid/streams-r11.jpg, evid/B-z6-orange-r14.jpg, evid/restored-B-r26.jpg
 
 ## 7. Narrow windows: the WebGPU badge covers the hour slider
 - Severity: polish
@@ -56,6 +62,7 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: fixed on bba983e (proof: still at 800x1000, the HUD bar now sits under the badge)
 - Matches fixlist: new (HUD, near 4.6)
 - Repro: any run at 800x1000 or resize to 800 wide; seed 4 frame k13
+- Expected: 
 - Evidence: evid/hud-overlap.jpg, evid/hud-overlap-3.jpg
 
 ## 8. Night side is pitch black and the planet disappears into space
@@ -64,6 +71,7 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: open, changed on 6de93f9 and 96c5cf1 (night floors removed, twilight from 07:30). Home island 47.78 N 38.63 E zoom 5.3 mean luma: 02:00 19.7, 06:15 12.8, 07:30 19.3, 08:00 28.1. 06:15 is the darkest (the lead says that is the law: moon set, sun 12 degrees below until 07:30); the pole is 21.6 at 02:00 and 17.8 at 06:15 and flat
 - Matches fixlist: fixlist 4.1 (known)
 - Repro: set the hour to 02:00 and zoom out; seed 3 frame k260 Round 8: look.ts 47.78,38.63 zoom 5.3 at hour 2, 4, 5, 6.25, 7, 8: mean luma 21.0, 16.2, 15.1, 15.1, 15.1, 23.9. Seed 49, hour set at 85 s.
+- Expected: 
 - Evidence: evid/night-orbit-s3.jpg, evid/night-new.jpg, evid/night-home-0615-0200.jpg, evid/night-A-0200.jpg, evid/dawn-r10.jpg
 
 ## 9. Terrain washboard and stepped coasts
@@ -72,6 +80,7 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: open, unchanged in round 5
 - Matches fixlist: fixlist 6.2 and 6.3 (known)
 - Repro: seed 2 frame k507 (zoom -2.7), seed 16 frame k731 (zoom 0.2)
+- Expected: 
 - Evidence: evid/washboard-coast-s2.jpg, evid/hatching-s16.jpg, evid/bands-s51.jpg, evid/e2-r12.jpg
 
 ## 10. favicon.ico gives a 404
@@ -80,6 +89,7 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: fixed (favicon answers 204, no http error in sessions s32 and s34)
 - Matches fixlist: new
 - Repro: load /play/
+- Expected: 
 - Evidence: evid/hud-overlap.jpg
 
 ## 11. Thin dotted straight lines across the ground at zoom 1.8 to 2.6
@@ -88,15 +98,17 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: open, unchanged in round 5
 - Matches fixlist: new
 - Repro: seed 22, 800x1000, about 29.5 s, wheel in through zoom 1.9 to 2.6; frames k299 to k303
+- Expected: 
 - Evidence: evid/dotted-lines-s22.jpg
 
 ## 12. A cube corner at 35.26 S 135 W: the coast is a straight diagonal cut with a lit cliff edge, zoom 3 and 4.5
 - Severity: visibly broken
-- Seen: Still at 35.26 S 135 W at zoom 3 and 4.5 on 6749586 (look.ts, hour 13). At zoom 6.5 the same coast is natural. The other seven corners show no wedge or cut at zoom 3 and 4.5.
+- Seen: Still at 35.26 S 135 W at zoom 3 and 4.5 on 6749586 (look.ts, hour 13). At zoom 6.5 the same coast is natural. The other seven corners show no wedge or cut at zoom 3 and 4.5. Round 26 (restored planet): 35.26 S 135 W is still deep sea at zoom 3 and 4.5 (evid/restored-C-r26.jpg).
 - Status: fixed by the new planet: 35.26 S 135 W is now deep sea at zoom 3 and 4.5, no cut; all 8 cube corners at zoom 3, 4.5, 6.5 show no wedge, no straight cut, no streaks (evid/np-S135W-deepsea.jpg, evid/np-corner-35N45E.jpg)
 - Matches fixlist: V3's corner finding (island ending in a straight diagonal cut), not fixed at this corner
 - Repro: look.ts '-35.26,-135,3;4.5;6.5' at hour 13, 1280x800
-- Evidence: evid/corner-cut-S135W-z3.jpg, evid/corner-r10.jpg, evid/np-S135W-deepsea.jpg, evid/np-corner-35N45E.jpg
+- Expected: 
+- Evidence: evid/corner-cut-S135W-z3.jpg, evid/corner-r10.jpg, evid/np-S135W-deepsea.jpg, evid/np-corner-35N45E.jpg, evid/restored-C-r26.jpg
 
 ## 13. Frame stalls of 120 to 216 ms on the home island at zoom 1.3 to 4.4
 - Severity: polish
@@ -104,15 +116,17 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: fixed on 1c4111b: arrival test at 10 far places and 2 zooms, 20 arrivals: 0 frame gaps over 60 ms; 4 sessions: no stall hit (before: 120 to 216 ms in rounds 9 and 15)
 - Matches fixlist: new (near fixlist perf items)
 - Repro: seed 55, 1280x800, frames k595 to k606 (51.3 to 52.9 s) midWalk at zoom 4.4 to 2.9; seed 50 k305 to k325
+- Expected: 
 - Evidence: evid/stall-s55.jpg
 
 ## 14. Streams smaller than a pixel are drawn as hairlines: a 1 px blue and white line with straight horizontal and vertical runs
 - Severity: noticeable
-- Seen: Seed 60, 1280x800, about 80 s, 11.32 S 57.46 E, zoom 4.7 to 5.6 (frames k925 to k929); the HUD there shows 'sun 13:12'. The line crosses bare soil and trees, with right-angled runs. Round 13: at 12.23 N 83.85 E zoom 3.9 the stream is a staircase of right-angled steps (about 10 px per step, evid/np-misc.jpg first still); at R 12.02 N 83.89 E zoom 2.5 the thin streams are a grey hairline. 1.9 S 64.9 E zoom 0.7: a thin blue stream drawn as one straight vertical line with a kink. Round 14 (e59df3f): streams at R 12.23 N 83.85 E zoom 3 to 6 are one staircase of right-angled steps about 10 px a step, seen as thin grey at zoom 3, steps at zoom 4 and 5, a thick blue river with orange banks at zoom 6 (evid/stream-stairs-r14.jpg). At A 4.35 N 39.38 W zoom 3 and 4 a stream is a single dead-straight vertical line, screen tall, with one small jog (evid/A-z4-r14.jpg).
+- Seen: Seed 60, 1280x800, about 80 s, 11.32 S 57.46 E, zoom 4.7 to 5.6 (frames k925 to k929); the HUD there shows 'sun 13:12'. The line crosses bare soil and trees, with right-angled runs. Round 13: at 12.23 N 83.85 E zoom 3.9 the stream is a staircase of right-angled steps (about 10 px per step, evid/np-misc.jpg first still); at R 12.02 N 83.89 E zoom 2.5 the thin streams are a grey hairline. 1.9 S 64.9 E zoom 0.7: a thin blue stream drawn as one straight vertical line with a kink. Round 14 (e59df3f): streams at R 12.23 N 83.85 E zoom 3 to 6 are one staircase of right-angled steps about 10 px a step, seen as thin grey at zoom 3, steps at zoom 4 and 5, a thick blue river with orange banks at zoom 6 (evid/stream-stairs-r14.jpg). At A 4.35 N 39.38 W zoom 3 and 4 a stream is a single dead-straight vertical line, screen tall, with one small jog (evid/A-z4-r14.jpg). Round 26: A zoom 3 and 4 still has the screen-tall straight vertical stream.
 - Status: improved on 7a96f20: the staircase is gone, streams at R 12.23 N 83.85 E zoom 3, 4, 5, 6 and R 12.02 N 83.89 E zoom 2.5 to 3 are smooth curves (evid/streams-smooth-r16.jpg); a dead-straight screen-tall vertical stream remains at A 4.35 N 39.38 W zoom 3 and 4 and a straight vertical hairline at 1.9 S 64.9 E zoom 0.7 (the lead says new bake data)
 - Matches fixlist: new (V6's bankfull streams)
 - Repro: seed 60, 1280x800, frames k925 to k929 (80 s), zoom 4.7 to 5.6 near 11.32 S 57.46 E
-- Evidence: evid/hairline-stream-s60.jpg, evid/np-misc.jpg, evid/stream-stairs-r14.jpg, evid/A-z4-r14.jpg, evid/streams-smooth-r16.jpg
+- Expected: 
+- Evidence: evid/hairline-stream-s60.jpg, evid/np-misc.jpg, evid/stream-stairs-r14.jpg, evid/A-z4-r14.jpg, evid/streams-smooth-r16.jpg, evid/restored-A-r26.jpg
 
 ## 15. Small luma dips and steps at the level boundaries when zooming through a forest (zoom 7.5, 6.6, 5.6, 4.6, 3.6)
 - Severity: polish
@@ -120,15 +134,17 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: improved on e59df3f: hand-over ladders zoom 4.8 to 3.4 (0.1 steps) at A (luma 157 to 124), home (89 to 95) and B (69 to 80): no step above 3.4 luma, no frame gap above 33 ms; at the home island a 3 luma dip at 4.6; the sweeps' 5 marginal steps at A are under my 3.5 step threshold
 - Matches fixlist: lead's tree commits (luma dip at the fade) partly fixed
 - Repro: treetest.ts tree2 47.78 38.63 8.5 3 (one wheel tick of 25 per step, 112 steps), results /tmp/globe-e2e/tree2/res.json
+- Expected: 
 - Evidence: evid/tree-4.9-4.6-4.3.jpg
 
 ## 16. Rivers are straight lines (and evenly spaced stripes carry the streams)
 - Severity: visibly broken
-- Seen: Operator observation, recorded at: R 12.02 N 83.89 E, zoom -1 and 1, the river is one dead straight east-west line across the whole screen (2 km wide at zoom -1), with its lakes strung on the same line; at zoom 2.5 the same river is a few long straight runs joined at sharp 45 degree angles (banks orange, water blue). Evenly spaced parallel ridges, each with a forest strip, at A 4.35 N 39.38 W zoom -1 to 1, home island 47.78 N 38.63 E zoom -1 and E2 13.27 N 45 E zoom -1. On builds up to 94342c5 the streams were evenly spaced parallel orange lines (seed 44 frame k1273, zoom 5.07). Hairline streams with right-angled runs at 11.32 S 57.46 E zoom 4.7 to 5.6 (issue 14). Round 13: R 12.02 N 83.89 E on the new planet: still one straight east-west river at zoom -1 and 1, and at zoom 2.5 thin streams are curved (a change). Home island, A, E2 at zoom -1 are still evenly spaced ridges. Round 14: the stream at A zoom 3 and 4 is one straight vertical line the whole screen high; the R streams are staircases (issue 14). Round 16: river drags at R 12.23 N 83.85 E zoom 4 (east and south), R 12.02 N 83.89 E zoom 3 (west) and A zoom 4 (diagonal), 60 steps each over window swaps: every step 1:1 (pick jump 0 px), the stills along the drags show no seam and no popping stream.
+- Seen: Operator observation, recorded at: R 12.02 N 83.89 E, zoom -1 and 1, the river is one dead straight east-west line across the whole screen (2 km wide at zoom -1), with its lakes strung on the same line; at zoom 2.5 the same river is a few long straight runs joined at sharp 45 degree angles (banks orange, water blue). Evenly spaced parallel ridges, each with a forest strip, at A 4.35 N 39.38 W zoom -1 to 1, home island 47.78 N 38.63 E zoom -1 and E2 13.27 N 45 E zoom -1. On builds up to 94342c5 the streams were evenly spaced parallel orange lines (seed 44 frame k1273, zoom 5.07). Hairline streams with right-angled runs at 11.32 S 57.46 E zoom 4.7 to 5.6 (issue 14). Round 13: R 12.02 N 83.89 E on the new planet: still one straight east-west river at zoom -1 and 1, and at zoom 2.5 thin streams are curved (a change). Home island, A, E2 at zoom -1 are still evenly spaced ridges. Round 14: the stream at A zoom 3 and 4 is one straight vertical line the whole screen high; the R streams are staircases (issue 14). Round 16: river drags at R 12.23 N 83.85 E zoom 4 (east and south), R 12.02 N 83.89 E zoom 3 (west) and A zoom 4 (diagonal), 60 steps each over window swaps: every step 1:1 (pick jump 0 px), the stills along the drags show no seam and no popping stream. Round 26: R 8.32 N 88.30 E zoom -1 and 1 and 12.02 N 83.89 E zoom -1: the river is still dead straight with lakes on the line; at zoom 3 it is a smooth wide river with orange banks.
 - Status: open, partly improved on 7a96f20: streams at zoom 2.5 to 6 are smooth curves now. The R river at zoom -1 and 1 is still one dead-straight east-west line (evid/R-straight-r16.jpg) and at zoom 1 a slight wobble only; the ridges at zoom -1 are still evenly spaced
 - Matches fixlist: fixlist washboard (the furrows each carry a stream), new for the river line
 - Repro: look.ts 12.02,83.89 zoom -1;1;2.5 at hour 13 (1280x800)
-- Evidence: evid/straight-river-R.jpg, evid/even-ridges-A.jpg, evid/np-R-river.jpg, evid/R-straight-r16.jpg
+- Expected: 
+- Evidence: evid/straight-river-R.jpg, evid/even-ridges-A.jpg, evid/np-R-river.jpg, evid/R-straight-r16.jpg, evid/restored-R-r26.jpg, evid/restored-R2-r26.jpg
 
 ## 17. Forest edges are straight lines instead of fading out
 - Severity: visibly broken
@@ -136,14 +152,16 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: improved on e59df3f: forest edges at A (4.35 N 39.38 W) and the home island (47.78 N 38.63 E) at zoom 3 to 6 now wander with outlying clumps and a thin fringe, no straight line (evid/edge-A-r14.jpg, edge-H-r14.jpg); still straight: coast and shore edges at B 35.9 S 43.59 E zoom 3 to 5 (one smooth curve with a dark rim, hydrology) and the stream banks at R
 - Matches fixlist: overlaps issue 4 and 12 (tile and corner edges), plus the shape of the forest cover
 - Repro: seed 67, 1280x800, frames k1521 to k1523 (128 s), zoom 0.6; look.ts -35.9,43.59 zoom 1;2.5
+- Expected: 
 - Evidence: evid/forest-edge-flat-s67.jpg, evid/edge-coast-B.jpg, evid/edge-A-r14.jpg, evid/edge-H-r14.jpg
 
 ## 18. After an orbit drag the planet rolls and glides back (check)
 - Severity: polish
-- Seen: Round 23: see status. Not visually confirmed at 42 N (the pair of stills is hard to read, the night side).
+- Seen: Round 23: see status. Not visually confirmed at 42 N (the pair of stills is hard to read, the night side). Round 26: orbit roll numbers identical to round 23 (east drags at 0.5 R: 13, 36, 55, 89 deg at 20, 42, 58 N and the pole; south drags 0 at 20 and 42 N).
 - Status: open: roll is not zero on 745cd2a by my measure (the screen angle of the south direction at the view centre, before against after a 30 step, 150 px drag): east drags 13 deg at 20 N, 36 at 42 N, 55 at 58 N, 68 at 75 N, 90 at the pole with the press at 0.5 of the radius; at 0.9 of the radius 8, 19, 32, 51, 90; south drags 0 to 0.7 at 20 and 42 N but 33 deg at 58 N (press 0.5), 76 at 58 N (press 0.9), 157 at 75 N, 180 at the pole; north drags 0 to 2 (0.5) and 2 to 36 (0.9). The picture does not move when the mouse is held still (0.0 to 0.07 px, 0 to 0.3 deg in 0.7 s), nothing glides back after release (the roll stays), and the grabbed place stays under the mouse (5 to 14 px off, 122 px off only for east presses at 0.9 of the radius where the mouse moves out over the limb). The measure and the lead's measure may differ (mine reads a rotation of the globe's north direction at the centre, which a hand-turned sphere also has when you drag along a parallel at high latitude)
 - Matches fixlist: new (camera set 6581570)
 - Repro: orbitdrag.ts at 42 N -19.9 diagNW and POLE diagNW, shots orbit1/*-held.jpg and *-after.jpg
+- Expected: 
 - Evidence: evid/orbit-roll-n42-r17.jpg, evid/orbit-roll-pole-r17.jpg, evid/roll42-r23.jpg
 
 ## 19. Sea glints: hundreds of tiny bright specks evenly spread over the water, day and night
@@ -152,12 +170,14 @@ Reconstructed after the 2026-10-27 /tmp wipe from report e2e-bcfaf465e647 (round
 - Status: fixed on 7534e5d: the evenly spread white and orange confetti is gone by day and by night at zoom 5, 8.27 and 9 (15.02 N 71.76 W, 30 N 100 E, 0.64 S 4.64 W); no orange specks counted at any hour tested; what remains are pale blue wave crests (1400 to 2000 bright blue pixels at noon zoom 5 and 8.27, evid/sea-day-r22.jpg) and faint blue facets at night (evid/sea-night-r22.jpg), which look like waves, not confetti
 - Matches fixlist: new (sea glints)
 - Repro: look.ts 15.02,-71.76 zoom 5;8.27 with Q=hour=20.5&warm=0 (day) and Q=hour=2&warm=0 (night)
+- Expected: 
 - Evidence: evid/sea-noon-r21.jpg, evid/sea-night-glints-r21.jpg, evid/sea-day-r22.jpg, evid/sea-night-r22.jpg
 
 ## 20. After arriving at a place, the picture is a blurry other picture for 1 to 3.5 seconds, then pops to the final one
 - Severity: noticeable
-- Seen: Right after look.ts reaches 25 N 15 E zoom 2 (page idle reports done) the picture is uncorrelated with the final one (corr 0.00 to 0.05 for the first 0.5 s, 0.47 at 1.1 s, 0.86 at 2 s, 0.99 at 3 s, 1.0 after 3.5 s). At 15.02 N 71.76 W zoom 3 the first frame is 0.91 like the last, so it is steady at once there. A wheel tick in and out at zoom 2 settles in 0.7 s. At zoom 5 and above the sea is steady.
+- Seen: Right after look.ts reaches 25 N 15 E zoom 2 (page idle reports done) the picture is uncorrelated with the final one (corr 0.00 to 0.05 for the first 0.5 s, 0.47 at 1.1 s, 0.86 at 2 s, 0.99 at 3 s, 1.0 after 3.5 s). At 15.02 N 71.76 W zoom 3 the first frame is 0.91 like the last, so it is steady at once there. A wheel tick in and out at zoom 2 settles in 0.7 s. At zoom 5 and above the sea is steady. Round 26 (arrsettle): same as round 25. Sea arrivals right from the first frame (0.84 to 0.94, final by 0.1 to 1.5 s); land arrivals uncorrelated for 1.4 to 3.3 s then pop: A zoom 2 3.3 s, A 3 2.5 s, M 3 2.9 s, B 3 2.2 s, home 3 2.0 s, R 4 1.4 s, E2 2 1.5 s; A zoom 4 at once.
 - Status: improved for the sea on 14f4382: 25 N 15 E zoom 2 and 15.02 N 71.76 W zoom 2 are 0.88 like the final from the first frame and are settled in 1 to 2 s (was 0.00 for 1 s and 3.5 s), zoom 3 at 25 N 15 E 0.84 to 1.0 in 0.5 s. NOT for land: after a far jump the picture at A zoom 2 and 3, B 3, home 3, M 3, R 4 and E2 2 is uncorrelated with the final one (corr 0.0 to 0.4) for 1 to 3.5 s and then pops to the final (A zoom 2 3.5 s, A 3 2.7 s, M 3 2.8 s, home 3 2.5 s, B 3 2.3 s, R 4 1.7 s, E2 2 1.7 s). A zoom 4 is right at once (0.88), 15 N 71 W zoom 4 in 0.2 s (evid/arrival-A-z3-r25.jpg: first frames a smooth olive picture, 2.2 s a forest and sand picture with a stream)
 - Matches fixlist: new (waves at every zoom)
 - Repro: settle2.ts 25 15 2 13 (screenshots every 200 ms after the jump)
+- Expected: 
 - Evidence: evid/arrival-A-z3-r25.jpg

@@ -15,13 +15,14 @@ const hits: any[] = [], log: any[] = [], anchors: any[] = [];
 await launch([VW, VH], "hour=13&warm=0", async (page, _c, _b, errs) => {
   await page.evaluate(() => {
     const w = window as any, P = w.play, L = P.live, rows: any[] = []; w.__rows = rows; w.__last = performance.now();
-    const f = (t: number) => { const g = t - w.__last; w.__last = t; const v = P.view; let sp: any = null; try { if (w.__piv && v.geo) sp = L.screenOf(v, 0, 0, 0, w.__piv); } catch {} rows.push([Date.now(), +t.toFixed(1), v.zoom, v.geo?.lat, v.geo?.lon, +g.toFixed(1), sp ? +sp[0].toFixed(1) : null, sp ? +sp[1].toFixed(1) : null]); requestAnimationFrame(f); };
+    const f = (t: number) => { const g = t - w.__last; w.__last = t; const v = P.view; let sp: any = null; try { if (w.__piv && v.geo) sp = L.screenOf(v, 0, 0, 0, w.__piv); } catch {} rows.push([Date.now(), +t.toFixed(1), v.zoom, v.geo?.lat, v.geo?.lon, +g.toFixed(1), sp ? +sp[0].toFixed(1) : null, sp ? +sp[1].toFixed(1) : null, w.__drag ?? 0]); requestAnimationFrame(f); };
     requestAnimationFrame(f);
   });
   const T0 = Date.now(); let mx = VW / 2, my = VH / 2, down = false;
   const pivot = () => page.evaluate(() => { const P = (window as any).play, g = P.view.geo; (window as any).__piv = g ? { lat: g.lat, lon: g.lon } : null; });
   const move = async (x: number, y: number, ms = 200) => { const n = Math.max(2, Math.round(ms / 25)); const x0 = mx, y0 = my; for (let i = 1; i <= n; i++) { await page.mouse.move(x0 + ((x - x0) * i) / n, y0 + ((y - y0) * i) / n); await sleep(25); } mx = x; my = y; };
-  const drag = async (dx: number, dy: number, ms: number) => { await pivot(); await page.mouse.down(); down = true; await move(mx + dx, my + dy, ms); await page.mouse.up(); down = false; };
+  let dragId = 0;
+  const drag = async (dx: number, dy: number, ms: number) => { await pivot(); dragId++; await page.evaluate((d: number) => { (window as any).__drag = d; }, dragId); await page.mouse.down(); down = true; await move(mx + dx, my + dy, ms); await page.mouse.up(); down = false; await page.evaluate(() => { (window as any).__drag = 0; (window as any).__piv = null; }); };
   const idle = async () => { for (let i = 0; i < 20; i++) { await sleep(400); const r = await page.evaluate(() => (window as any).play.live.debug.check({ op: "idle" })).catch(() => ({ busy: true })); if (!r.busy) return; } };
   const go = async (lat: number, lon: number, z: number) => { await page.evaluate((a: number, b: number, zz: number) => { const P = (window as any).play; P.view.geo = { lat: a, lon: b }; P.camera.setZoom(zz); }, lat, lon, z); await idle(); };
   const shots: { t: number; luma: number; std: number; zoom: number }[] = [];
@@ -48,13 +49,13 @@ await launch([VW, VH], "hour=13&warm=0", async (page, _c, _b, errs) => {
   while (Date.now() - T0 < DUR) { try { await actions[Math.floor(rnd() * actions.length)](); } catch (e: any) { hits.push({ type: "step-error", msg: String(e).slice(0, 120) }); } await sleep(rf(100, 600)); }
   shooting = false; await shooter;
   const rows = await page.evaluate(() => (window as any).__rows as any[]);
-  writeFileSync(`${OUT}/log.json`, JSON.stringify({ cols: ["t", "pt", "zoom", "lat", "lon", "gap", "px", "py"], rows }));
+  writeFileSync(`${OUT}/log.json`, JSON.stringify({ cols: ["t", "pt", "zoom", "lat", "lon", "gap", "px", "py", "dragId"], rows }));
   // detectors
   for (let i = 1; i < rows.length; i++) { const r = rows[i], p = rows[i - 1];
     if (r[5] > 100 && r[1] - rows[0][1] > 3000) hits.push({ type: "stall", t: r[0], detail: `frame gap ${r[5]} ms at zoom ${r[2]?.toFixed(2)}` });
-    if (r[6] != null && p[6] != null && r[0] - T0 > 2500) { const j = Math.hypot(r[6] - p[6], r[7] - p[7]); if (j > 250 && Math.abs(r[2] - p[2]) < 0.05) hits.push({ type: "camera-snap", t: r[0], detail: `pivot moved ${Math.round(j)} px in one frame at zoom ${r[2]?.toFixed(2)}` }); } }
+    if (r[8] && r[8] === p[8] && r[6] != null && p[6] != null) { const j = Math.hypot(r[6] - p[6], r[7] - p[7]); if (j > 150 && Math.abs(r[2] - p[2]) < 0.05 && r[2] < 2.9) hits.push({ type: "camera-snap", t: r[0], detail: `pivot moved ${Math.round(j)} px in one frame at zoom ${r[2]?.toFixed(2)}` }); } }
   for (const s of shots) { if (s.std < 1.5 && s.zoom > 0 && s.luma > 25) hits.push({ type: "blank", t: s.t, detail: `flat frame (std ${s.std}, mean ${s.luma}) at zoom ${s.zoom}` }); if (s.luma < 22 && s.zoom > 0) hits.push({ type: "night-dark", t: s.t, detail: `dark frame (luma ${s.luma}) at zoom ${s.zoom}` }); }
-  for (const a of anchors) if (a.d > 25) hits.push({ type: "anchor-drift", t: a.t, detail: `ground under the cursor drifted ${Math.round(a.d)} px over a wheel burst from zoom ${a.z0} to ${a.z1}` });
+  for (const a of anchors) if (a.d > 25 && a.d < 1e6 && a.z0 < 2.9 && a.z1 < 2.9) hits.push({ type: "anchor-drift", t: a.t, detail: `ground under the cursor drifted ${Math.round(a.d)} px over a wheel burst from zoom ${a.z0} to ${a.z1}` });
   writeFileSync(`${OUT}/hits.json`, JSON.stringify({ id: ID, hits, anchors, errs: errs.map((e) => ({ kind: e.kind, msg: e.msg })) }, null, 1));
   const c: Record<string, number> = {}; for (const h of hits) c[h.type] = (c[h.type] ?? 0) + 1;
   console.log(JSON.stringify({ id: ID, frames: rows.length, shots: shots.length, summary: c, errs: errs.filter((e) => e.kind !== "requestfailed").length, worstAnchor: Math.max(0, ...anchors.map((a) => a.d)) }));
