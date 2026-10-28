@@ -6,9 +6,9 @@
 //
 // The model in a paragraph. Erosion runs on tectonics' own state: the five rock volumes of every column. A substep reads the
 // isostatic height of each column, floods the depressions (priority flood from the ocean inward), drains every land cell to its
-// steepest neighbour on the flooded surface (a forest rooted at the ocean), sums the discharge (cell area times rain) down the
+// steepest lower neighbour on the flooded surface, the diagonal links' lengths drawn anew each substep (Rho8: a forest rooted at the ocean), sums the discharge (cell area times rain) down the
 // forest, cuts each cell by the implicit stream power law with the erodibility of the rock in the top of its column (and, where the
-// relief over its lowest neighbour is more than the river's slope shows, by the landscape-scale law of local relief), takes that
+// relief over the 5 km round it is more than the river's slope shows, by the landscape-scale law of local relief), takes that
 // rock off the top of the column, sheds a dissolved share of it, and carries the rest down the forest: lakes fill, a share
 // settles along the way, and what reaches the coast spreads outward over the shelf by rings. Hillslopes creep and the sea
 // floor's sediment diffuses by the grid's conservative stencil. Rock removed from a column lowers the surface by only a sixth
@@ -18,11 +18,10 @@ import { cover, pipeline, readback, storage } from "../kernel";
 import { ROCKS, SANDSTONE, GRANITE, CREEP } from "../../terrain/geology";
 import { CAP_FACTOR, EF, CNT, FLAG, LED, PR, erosionWgsl } from "../wgsl/globe-erosion";
 import { FLD, PHYS } from "../wgsl/globe-tectonics";
-import { EDGES, FACES, GlobeGpu, centre, cellId, fieldWords, haloSource, haloTwin, meanAreaM2, meanCellM, tierGrid, tileCount, wordAt, type Grid, type Tables } from "./grid";
+import { EDGES, FACES, GlobeGpu, centre, cellId, fieldWords, haloSource, haloTwin, meanAreaM2, tileCount, wordAt, type Grid, type Tables } from "./grid";
 import { Tectonics, cellAreas, extTables, startingState, type Setup } from "./tectonics";
 import { similarityOf } from "./similarity";
 import { philox } from "../rand";
-import { kFactors } from "./kfield";
 
 export { CAP_FACTOR, EF, FLAG, PR };
 
@@ -40,10 +39,6 @@ export interface ErosionParams {
   shelfSlope: number;
   ringMax: number;
   relief: boolean; // landscape-scale denudation by local relief (MONTGOMERY_BRANDON), on or off
-  kvar: boolean; // the erodibility scaled by a spatial field of the rock (kfield.ts)
-  draw: boolean; // the receiver drawn among the lower neighbours by the fall over the distance, anew each substep (wgsl `recv`), not the steepest
-  rwin: boolean; // the relief law's R is the height range over the cells within 5 km (Montgomery and Brandon's window), not the height over the lowest axis neighbour (wgsl `relief`)
-  rho8: boolean; // the receiver the steepest by Rho8's random diagonal lengths, anew each substep (wgsl `recv`), not the steepest
 }
 
 // Erodibility for the stream power law at m = 1/2, n = 1, drainage area in m2 (K in 1/yr), as terrain/geology.ts holds it [cited R523: Stock
@@ -78,7 +73,7 @@ export const CREEP_LAND = CREEP;
 // Landscape-scale erosion rate against mean local relief R within a 10 km window: E = E0 + K R / (1 - (R / Rc)^2), the limiting relief Rc = 1,500 m, E0 = 0.01 mm/yr (the chemical
 // denudation of the 35 largest basins), K = 2.5e-4 mm/yr per m [cited R1689: Montgomery and Brandon 2002, EPSL 201: 481 to 489, fig. 4 and eqs. 1 and 2, read]. Their data: tectonically
 // active mountain belts have mean local relief of 1,000 to 2,000 m whatever the climate, under 2% of the land has more than 1,500 m, rates above 10 mm/yr are rare. The relief here is
-// the height of a cell over its lowest axis neighbour (12 km), and R is held under 15/16 of Rc where the law is singular [design]: E then tops out at 2.9 mm/yr.
+// the height range over the 21 cells within 5 km of a cell's centre at the mean cell width (the 5 by 5 block less its four corners, which lie 2.83 cells away), and R is held under 15/16 of Rc where the law is singular [design]: E then tops out at 2.9 mm/yr.
 export const MONTGOMERY_BRANDON = { e0MmYr: 0.01, rcM: 1500, kMmYrPerM: 2.5e-4, cap: 15 / 16, subIntervals: 8 };
 // The law itself, mm/yr for a relief in m, held under the cap (the kernel's `relief` integrates it over a substep).
 export const denudationFromRelief = (reliefM: number) => {
@@ -99,30 +94,15 @@ export const SUBSTEP_YR = 5e5;
 // The erosion's lengths on a similar planet (similarity.ts): creep's and the sea floor's diffusivities, the shelf's slope and the sediment's reach are rock's, water's and gravity's, Earth's on
 // every planet (R1776 to R1778, amended by Unit 4c); the reach is 96 rings of the reference planet's 12.27 km cells, 1,178 km, which is that many times more rings of this planet's smaller
 // cells. The stream power law's K carries no length, the relief law's window (10 km, R1689) is Earth's.
-// Scale-aware dissection (knob NOMADS_DEFF_TIERS, a list of tiers, default none). Perron, Kirchner and Dietrich 2009 (Nature 460, 502-505): first-order valleys lie 6.4 to 12.7 Lc apart,
-// Lc = (D / K)^(1 / (2 m + 1)) [cited, read]. A grid shows a valley spacing only when it is at least 4 cells (2 is Nyquist; 4 leaves a ridge cell and a valley cell each side) [design], so
-// the Lc a tier resolves is Lc_t = 4 dx_t / 6.4 = 0.625 dx_t, dx_t the side of its mean cell, and the dissection below it is carried by the cell as a land diffusivity
-// D_t = max(D, K Lc_t^(2 m + 1)) with m = 1/2 and K granite's [design]. A tier that resolves the physical Lc keeps the physical D.
-export const RESOLVED_CELLS = 4, VALLEY_LC_MIN = 6.4;
-export const deffTiers = (): number[] => (process.env.NOMADS_DEFF_TIERS ?? "").split(",").filter(Boolean).map(Number);
-export function landDiffusivity(radius: number, tier: number, creep: number = CREEP_LAND, k: number = K_GRANITE): number {
-  if (!deffTiers().includes(tier)) return creep;
-  const lc = (RESOLVED_CELLS / VALLEY_LC_MIN) * meanCellM(tierGrid(tier, radius));
-  return Math.max(creep, k * lc * lc);
-}
 export function erosionFor(radius: number): Partial<ErosionParams> {
-  const sim = similarityOf(radius), knobs: Partial<ErosionParams> = {};
-  if (process.env.NOMADS_TIER0_DRAW === "1") knobs.draw = true;
-  if (process.env.NOMADS_T0_RHO8 === "1") knobs.rho8 = true;
-  if (process.env.NOMADS_T0_RELIEF_WINDOW === "1") knobs.rwin = true;
-  if (deffTiers().includes(0)) knobs.creepLand = landDiffusivity(radius, 0);
-  if (!sim.similar) return knobs;
-  return { ringMax: Math.max(1, Math.round(RING_MAX * sim.cells)), ...knobs };
+  const sim = similarityOf(radius);
+  if (!sim.similar) return {};
+  return { ringMax: Math.max(1, Math.round(RING_MAX * sim.cells)) };
 }
 export const defaultParams = (over: Partial<ErosionParams> = {}): ErosionParams => ({
   dtYr: SUBSTEP_YR, n: 1,
   K: [K_GRANITE, K_SANDSTONE, K_GRANITE, K_GRANITE, K_VOLCANIC],
-  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true, draw: false, rho8: false, rwin: false, kvar: process.env.NOMADS_KVAR === "1",
+  refRainMmYr: REF_RAIN_MMYR, skinM: SKIN_M, dissolved: DISSOLVED, G: DEPOSITION_G, creepLand: CREEP_LAND, creepSea: CREEP_SEA, shelfSlope: SHELF_SLOPE, ringMax: RING_MAX, relief: true,
   ...over,
 });
 
@@ -132,7 +112,7 @@ export function erosionWords(g: Grid, set: Setup, p: ErosionParams): Uint32Array
   const w = new Uint32Array(64), a0 = meanAreaM2(g), sea = Math.round(set.params.seaLevel * 16);
   w[0] = g.tiles; w[1] = g.fn; w[2] = tileCount(g);
   w[PR.sea16] = sea >>> 0; w[PR.eps] = 1; w[PR.ringMax] = p.ringMax; w[PR.diss16] = Math.round(p.dissolved * 65536); w[PR.g8] = Math.round(p.G * 256);
-  w[PR.kvar] = p.kvar ? 1 : 0; w[PR.draw] = p.draw ? 1 : 0; w[PR.rho8] = p.rho8 ? 1 : 0; w[PR.rwin] = p.rwin ? 1 : 0; w[PR.drawSeed] = set.params.seed >>> 0;
+  w[PR.rhoSeed] = set.params.seed >>> 0;
   w[PR.nExp] = p.n; w[PR.skin] = p.skinM; w[PR.shelf] = Math.round(p.shelfSlope * Math.sqrt(a0) * 256);
   for (let k = 0; k < 5; k++) w[PR.kc + k] = kWord(g, p, p.K[k]);
   if (p.relief) {
@@ -177,10 +157,9 @@ export function neighbourTables(g: Grid): { nb: Uint32Array; invd: Uint32Array }
   return { nb, invd };
 }
 // The read-only table X: neighbours, inverse distances, then the thermal buoyancy by age of tectonics' setup.
-export function erosionTable(set: Setup, kvar = false): Uint32Array {
-  const { nb, invd } = neighbourTables(set.grid), N = nb.length / 8, out = new Uint32Array(16 * N + PHYS.AGE_MAX + 1 + (kvar ? N : 0));
+export function erosionTable(set: Setup): Uint32Array {
+  const { nb, invd } = neighbourTables(set.grid), N = nb.length / 8, out = new Uint32Array(16 * N + PHYS.AGE_MAX + 1);
   out.set(nb); out.set(invd, 8 * N);
-  if (kvar) out.set(kFactors(set.grid.radius, set.params.seed), 16 * N + PHYS.AGE_MAX + 1);
   for (let i = 0; i <= PHYS.AGE_MAX; i++) out[16 * N + i] = set.Q[set.layout.phith + i] >>> 0;
   return out;
 }
@@ -211,7 +190,7 @@ export class Erosion {
   private base: Uint32Array = new Uint32Array(64);
   p: ErosionParams;
   lastRounds = 64;
-  drawKey = 0; // the number of the substep, which keys the receivers' draw when `p.draw` is on
+  rhoKey = 0; // the number of the substep, which keys Rho8's draw of the receivers
   // S: the tectonics state (FLD fields in the padded layout), which erosion reads and changes.
   constructor(readonly gpu: Gpu, readonly set: Setup, ext: { tab: Tables; T: Int32Array }, readonly S: GPUBuffer, p: Partial<ErosionParams> = {}) {
     this.g = set.grid; this.N = FACES * this.g.fn * this.g.fn;
@@ -219,7 +198,7 @@ export class Erosion {
     this.p = defaultParams(p);
     this.E = storage(gpu, EF.COUNT * this.N * 4);
     this.AT = storage(gpu, (3 * this.N + CNT.COUNT + 12) * 4);
-    this.X = storage(gpu, erosionTable(set, this.p.kvar));
+    this.X = storage(gpu, erosionTable(set));
     this.T = storage(gpu, ext.T);
     this.gg = new GlobeGpu(gpu, this.g, 3);
     this.wgsl = erosionWgsl(EDGES);
@@ -287,7 +266,7 @@ export class Erosion {
     }
     this.lastRounds = rounds - chunk;
     this.begin();
-    this.rec("recv", { [PR.drawKey]: this.drawKey }); this.rec("lvinit");
+    this.rec("recv", { [PR.rhoKey]: this.rhoKey }); this.rec("lvinit");
     for (let r = 0; r < 7; r++) { this.rec("jumpa"); this.rec("jumpb"); }
     this.rec("lvhist"); this.rec("lvscan", {}, 1); this.rec("lvscatter"); this.rec("area", {}, 1);
     this.submit();
@@ -402,13 +381,11 @@ export class Twin {
   readonly words: Uint32Array;
   readonly sea16: number;
   readonly phith: Int32Array;
-  readonly kf: Uint32Array | null;
-  drawKey = 0;
+  rhoKey = 0;
   constructor(readonly set: Setup, readonly ext: { tab: Tables; T: Int32Array }, readonly p: ErosionParams) {
     const g = set.grid;
     this.N = FACES * g.fn * g.fn; this.fw = fieldWords(g);
-    const x = erosionTable(set, p.kvar);
-    this.kf = p.kvar ? x.subarray(16 * this.N + PHYS.AGE_MAX + 1) : null;
+    const x = erosionTable(set);
     this.nb = x.subarray(0, 8 * this.N); this.invd = x.subarray(8 * this.N, 16 * this.N);
     this.phith = new Int32Array(x.buffer, (16 * this.N) * 4, PHYS.AGE_MAX + 1);
     this.area = ext.T.subarray(0, this.N);
@@ -463,9 +440,8 @@ export class Twin {
     for (let k = 0; k < N; k++) {
       to[k] = k;
       if (H[k] <= 0) continue;
-      let best = 0n, total = 0;
-      const share = [0, 0, 0, 0, 0, 0, 0, 0];
-      const rw = this.p.rho8 ? philox([k, this.drawKey, 0, 0x52484f38], [this.set.params.seed >>> 0, 0x524f5554]) : [0, 0, 0, 0];
+      let best = 0n;
+      const rw = philox([k, this.rhoKey, 0, 0x52484f38], [this.set.params.seed >>> 0, 0x524f5554]);
       for (let d = 0; d < 8; d++) {
         const j = this.nb[k * 8 + d];
         if (j === NONE) continue;
@@ -473,19 +449,9 @@ export class Twin {
         if (dz <= 0) continue;
         const iv = this.invd[k * 8 + d];
         let ev = iv;
-        if (this.p.rho8 && d >= 4) ev = Number(((BigInt(iv) * BigInt(Math.floor((92682 * 32768) / ((131072 - (rw[d - 4] & 0xffff)) >> 1)))) >> 16n) & M32);
+        if (d >= 4) ev = Number(((BigInt(iv) * BigInt(Math.floor((92682 * 32768) / ((131072 - (rw[d - 4] & 0xffff)) >> 1)))) >> 16n) & M32);
         const key = BigInt(dz) * BigInt(ev);
         if (key > best) { best = key; to[k] = j; rd[k] = iv; }
-        const skey = BigInt(dz) * BigInt(iv);
-        share[d] = Math.max(1, Math.min(Number((skey >> 16n) & M32), 0x0fffffff)); total += share[d];
-      }
-      if (this.p.draw && total > 0) {
-        const r = philox([k, this.drawKey, 0, 0x54305256], [this.set.params.seed >>> 0, 0x524f5554])[0] % total;
-        let acc = 0;
-        for (let d = 0; d < 8; d++) {
-          acc += share[d];
-          if (share[d] !== 0 && r < acc) { to[k] = this.nb[k * 8 + d]; rd[k] = this.invd[k * 8 + d]; break; }
-        }
       }
     }
     return { to, rd };
@@ -519,7 +485,6 @@ export class Twin {
       let rem = w[PR.skin], num = 0n, den = 0;
       for (const pl of ORDER) { const t = Math.min(this.thickM(this.get(S, pl, k), this.area[k]), rem); rem -= t; den += t; num += BigInt(t) * BigInt(w[PR.kc + pl]); }
       if (den > 0) kc[k] = Number(num / BigInt(den));
-      if (this.kf && den > 0) kc[k] = Number((BigInt(kc[k]) * BigInt(this.kf[k]) + 32768n) >> 16n);
     }
     // landscape-scale denudation by relief, from the heights before the incision
     const wl = new Int32Array(N);
@@ -528,19 +493,17 @@ export class Twin {
       for (let k = 0; k < N; k++) {
         if (H[k] <= 0) continue;
         let low = H[k], high = H[k];
-        if (w[PR.rwin]) {
-          for (let d1 = 0; d1 < 8; d1++) {
-            const j = this.nb[k * 8 + d1];
-            if (j === NONE) continue;
-            low = Math.min(low, Math.max(H[j], 0)); high = Math.max(high, H[j]);
-            for (let d2 = 0; d2 < 8; d2++) {
-              if (d1 >= 4 && d2 === d1) continue;
-              const m = this.nb[j * 8 + d2];
-              if (m === NONE) continue;
-              low = Math.min(low, Math.max(H[m], 0)); high = Math.max(high, H[m]);
-            }
+        for (let d1 = 0; d1 < 8; d1++) {
+          const j = this.nb[k * 8 + d1];
+          if (j === NONE) continue;
+          low = Math.min(low, Math.max(H[j], 0)); high = Math.max(high, H[j]);
+          for (let d2 = 0; d2 < 8; d2++) {
+            if (d1 >= 4 && d2 === d1) continue;
+            const m = this.nb[j * 8 + d2];
+            if (m === NONE) continue;
+            low = Math.min(low, Math.max(H[m], 0)); high = Math.max(high, H[m]);
           }
-        } else for (let d = 0; d < 4; d++) { const j = this.nb[k * 8 + d]; if (j !== NONE) low = Math.min(low, Math.max(H[j], 0)); }
+        }
         let r = high - Math.max(low, 0), tot = 0;
         for (let s = 0; s < 8; s++) {
           const rr = Math.min(r, rcap), q = Number((BigInt(rr) << 16n) / BigInt(rc)), den = 65536 - ((q * q) >>> 16);
@@ -801,7 +764,7 @@ export async function runChain(gpu: Gpu, set: Setup, o: ChainOptions, from?: Ret
           er.setRain(rain); nextRain = t + o.rainEveryMy;
         }
         for (let q = 0; q < o.substeps; q++) {
-          er.drawKey = s * o.substeps + q;
+          er.rhoKey = s * o.substeps + q;
           const r = await er.substep(true, removedV ? async () => { const [rv, ad] = await Promise.all([er.readE(EF.RV), er.readE(EF.AD)]); for (let i = 0; i < N; i++) { removedV[i] += rv[i] >>> 0; depositedV![i] += ad[i] >>> 0; } } : undefined);
           rounds = Math.max(rounds, r.rounds);
           total.removed += r.ledger!.removed; total.deposited += r.ledger!.deposited; total.dissolved += r.ledger!.dissolved;
@@ -815,14 +778,14 @@ export async function runChain(gpu: Gpu, set: Setup, o: ChainOptions, from?: Ret
     const quietFirst = r0 ? r0.quiet : 0;
     for (let q = quietFirst; q < quiet; q++) {
       if ((q > quietFirst || first >= set.steps) && late()) return await stop(set.steps, q);
-      er.drawKey = set.steps * o.substeps + q;
+      er.rhoKey = set.steps * o.substeps + q;
       const r = await er.substep(true, removedV ? async () => { const [rv, ad] = await Promise.all([er.readE(EF.RV), er.readE(EF.AD)]); for (let i = 0; i < N; i++) { removedV[i] += rv[i] >>> 0; depositedV![i] += ad[i] >>> 0; } } : undefined);
       rounds = Math.max(rounds, r.rounds);
       total.removed += r.ledger!.removed; total.deposited += r.ledger!.deposited; total.dissolved += r.ledger!.dissolved;
     }
     tec.elevate();
     const S = await tec.read();
-    er.drawKey = set.steps * o.substeps + quiet;
+    er.rhoKey = set.steps * o.substeps + quiet;
     er.heights(); await er.flow();
     return { S, ledger: total, carry: await er.carry(), removedV, depositedV, rain, flow: await er.readFlow(), rounds, seconds: (performance.now() - t0) / 1000 };
   } finally {

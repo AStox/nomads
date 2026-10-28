@@ -46,7 +46,7 @@ export const MAXD = 16382; // the deepest flow path the counting sort holds, in 
 // Parameter words (P, u32).
 export const PR = {
   sea16: 16, eps: 17, ringMax: 18, ring: 19, diss16: 20, g8: 21, upl: 22, kconst: 23, shelf: 24, nExp: 25, foLand: 26, foSea: 27, skin: 28, kc: 30, rc: 36, kdt: 37, e0: 38, // kc: five words from kc; rc, kdt, e0: the relief law (see `relief`)
-  draw: 40, drawKey: 41, drawSeed: 42, kvar: 43, rho8: 44, rwin: 45, // draw: 0 steepest descent, 1 the receiver drawn among the lower neighbours (see `recv`); the substep's number and the planet's seed key the draw; rho8: 1 the receiver by Rho8's random diagonal lengths
+  rhoKey: 40, rhoSeed: 41, // Rho8's draw of the receivers (see `recv`): the substep's number and the planet's seed key it
 } as const;
 
 // A layer of sediment laid on the water-loaded crust raises the surface by (rho_m - rho_s) / (rho_m - rho_w) of its thickness, 800 / 2300 [derived,
@@ -80,7 +80,7 @@ const VOL_MAX = ${2 ** 28}u;
 const CAPF = ${CAP_FACTOR_Q16}u;
 const P_SEA = ${PR.sea16}u; const P_EPS = ${PR.eps}u; const P_RINGMAX = ${PR.ringMax}u; const P_RING = ${PR.ring}u; const P_DISS = ${PR.diss16}u; const P_G = ${PR.g8}u;
 const P_UPL = ${PR.upl}u; const P_KCONST = ${PR.kconst}u; const P_SHELF = ${PR.shelf}u; const P_NEXP = ${PR.nExp}u; const P_FOL = ${PR.foLand}u; const P_FOS = ${PR.foSea}u;
-const P_KVAR = ${PR.kvar}u; const P_DRAW = ${PR.draw}u; const P_DRAWKEY = ${PR.drawKey}u; const P_DRAWSEED = ${PR.drawSeed}u; const P_RHO8 = ${PR.rho8}u; const P_RWIN = ${PR.rwin}u;
+const P_RHOKEY = ${PR.rhoKey}u; const P_RHOSEED = ${PR.rhoSeed}u;
 const P_SKIN = ${PR.skin}u; const P_KC = ${PR.kc}u; const P_RC = ${PR.rc}u; const P_KDT = ${PR.kdt}u; const P_E0 = ${PR.e0}u;
 
 fn touch() {
@@ -217,14 +217,12 @@ fn flood(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
   if (flround(k)) { atomicAdd(&AT[3u * cnt() + CNT_CHANGED], 1i); }
 }
 
-// ---- receivers: steepest descent on the flooded surface, the ocean ending every river ----
-// With P[P_DRAW] set the receiver is instead drawn among the lower neighbours with the probability proportional to the fall to each over its distance, anew each substep: steepest
-// descent sends water down any slope within 22.5 degrees of a lattice direction along that direction (Fairfield and Leymarie 1991, Tarboton 1997), so on a planar ramp it carves
-// straight valleys on the lattice. Every lower neighbour is a valid receiver, so the forest stays a forest; the draw is a Philox word of the cell's id, the substep and the seed.
-// With P[P_RHO8] set (Rho8, Fairfield and Leymarie 1991 as WhiteboxTools rho8_pointer has it: the fall to a cardinal neighbour over 1, to a diagonal one over 2 - r, r uniform in [0, 1),
-// a draw for each diagonal link and substep) the receiver is the steepest of those among the lower neighbours only, so every receiver is strictly lower on the flooded surface and no chain
-// can loop. The sphere's diagonal link has its own length (the table's inverse length), so the draw scales that link by (2 - r) / sqrt 2, which is 2 - r on a square grid: the link's inverse
-// length is multiplied by sqrt 2 x 2^16 / (2 - r) / 2^16 (sqrt 2 x 2^16 = 92682). The incision still reads the link's true length.
+// ---- receivers: Rho8 steepest descent on the flooded surface, the ocean ending every river ----
+// Rho8 (Fairfield and Leymarie 1991 as WhiteboxTools rho8_pointer has it): the fall to a cardinal neighbour over 1, to a diagonal one over 2 - r, r uniform in [0, 1), a draw for each diagonal
+// link and substep, anew each substep, so steepest descent's lattice bias (water sent down any slope within 22.5 degrees of a lattice direction along it) is not carved into straight valleys.
+// The receiver is the steepest of those among the lower neighbours only, so every receiver is strictly lower on the flooded surface and no chain can loop. The sphere's diagonal link has
+// its own length (the table's inverse length), so the draw scales that link by (2 - r) / sqrt 2, which is 2 - r on a square grid: the link's inverse length is multiplied by
+// sqrt 2 x 2^16 / (2 - r) / 2^16 (sqrt 2 x 2^16 = 92682). The incision still reads the link's true length. The draw is a Philox word of the cell's id, the substep and the seed.
 ${PHILOX}
 @compute @workgroup_size(256)
 fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
@@ -232,11 +230,9 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   let k = flatIndex(gid, nwg);
   if (k >= cnt()) { return; }
   var to = k; var rd = 0u; var best = vec2u(0u, 0u);
-  var rw = vec4u(0u, 0u, 0u, 0u);
-  if (P[P_RHO8] != 0u && is_land(k)) { rw = philox(vec4u(k, P[P_DRAWKEY], 0u, 0x52484f38u), vec2u(P[P_DRAWSEED], 0x524f5554u)); }
   if (is_land(k)) {
+    let rw = philox(vec4u(k, P[P_RHOKEY], 0u, 0x52484f38u), vec2u(P[P_RHOSEED], 0x524f5554u));
     let f = at_load(A_FL, k);
-    var share = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u); var total = 0u;
     for (var d = 0u; d < 8u; d++) {
       let j = nbr8(k, d);
       if (j == NONE) { continue; }
@@ -244,19 +240,9 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
       if (dz <= 0i) { continue; }
       let iv = invd8(k, d);
       var ev = iv;
-      if (P[P_RHO8] != 0u && d >= 4u) { ev = shr64(mul64(iv, (92682u << 15u) / ((131072u - (rw[d - 4u] & 0xffffu)) >> 1u)), 16u).x; }
+      if (d >= 4u) { ev = shr64(mul64(iv, (92682u << 15u) / ((131072u - (rw[d - 4u] & 0xffffu)) >> 1u)), 16u).x; }
       let key = mul64(u32(dz), ev);
       if (lt64(best, key)) { best = key; to = j; rd = iv; }
-      let skey = mul64(u32(dz), iv);
-      share[d] = max(1u, min(shr64(skey, 16u).x, 0x0fffffffu)); total += share[d];
-    }
-    if (P[P_DRAW] != 0u && total > 0u) {
-      let r = philox(vec4u(k, P[P_DRAWKEY], 0u, 0x54305256u), vec2u(P[P_DRAWSEED], 0x524f5554u)).x % total;
-      var acc = 0u;
-      for (var d = 0u; d < 8u; d++) {
-        acc += share[d];
-        if (share[d] != 0u && r < acc) { to = nbr8(k, d); rd = invd8(k, d); break; }
-      }
     }
   }
   e_setu(E_TO, k, to);
@@ -386,8 +372,6 @@ fn kappa(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
       acc = add64(acc, mul64(w, P[P_KC + pl]));
     }
     if (wsum_ > 0u) { kc = divw(acc.y, acc.x, wsum_).x; }
-    // with P[P_KVAR] set the class erodibility is scaled by the cell's factor of the spatial field (Q16, the table past the thermal buoyancy: kfield.ts)
-    if (P[P_KVAR] != 0u) { kc = shr64(add64(mul64(kc, X[16u * cnt() + AGE_MAX + 1u + k]), vec2u(32768u, 0u)), 16u).x; }
   }
   e_setu(E_KC, k, kc);
 }
@@ -445,8 +429,9 @@ fn incise(@builtin(local_invocation_index) t: u32) {
 
 // ---- landscape-scale denudation by relief (Montgomery and Brandon 2002) ----
 // A 12 km cell cannot hold a valley, so the stream power law sees only the slope between cell means and misses the denudation of the relief inside
-// the cell. Landscape-scale erosion rate follows local relief R as E = E0 + K R / (1 - (R / Rc)^2), with R measured here from a cell to its lowest axis
-// neighbour (12 km, the width of a 10 km window) over the sea level at the least. R is integrated in eight sub-intervals so that a steep scarp loses
+// the cell. Landscape-scale erosion rate follows local relief R as E = E0 + K R / (1 - (R / Rc)^2), with R the highest minus the lowest height (over the sea level at the least) of the
+// 21 cells whose centres lie within 5 km at the mean cell width, the 10 km window: the eight-neighbour table applied twice (5 by 5 cells), less the four corners reached by two steps of
+// one diagonal (2.83 cells away). R is integrated in eight sub-intervals so that a steep scarp loses
 // height as its relief falls; the relief is held under 15/16 of Rc, where the law becomes singular. P_RC is Rc in 1/256 m, P_KDT is K dt / 8 in Q16
 // and P_E0 is E0 dt / 8 in 1/256 m (all 0 when the law is off). WL holds the thickness the law takes from a cell in the substep, from the heights before incision.
 @compute @workgroup_size(256)
@@ -459,26 +444,17 @@ fn relief(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nw
   if (hk > 0i && P[P_RC] > 0u) {
     var low = hk;
     var high = hk;
-    if (P[P_RWIN] != 0u) {
-      // P_RWIN: R is the highest minus the lowest height over the 21 cells whose centres lie within 5 km at the mean cell width: the eight-neighbour table applied twice (5 by 5 cells),
-      // less the four corners reached by two steps of one diagonal (2.83 cells away)
-      for (var d1 = 0u; d1 < 8u; d1++) {
-        let j = nbr8(k, d1);
-        if (j == NONE) { continue; }
-        let hj = e_get(E_H, j);
-        low = min(low, max(hj, 0i)); high = max(high, hj);
-        for (var d2 = 0u; d2 < 8u; d2++) {
-          if (d1 >= 4u && d2 == d1) { continue; }
-          let m = nbr8(j, d2);
-          if (m == NONE) { continue; }
-          let hm = e_get(E_H, m);
-          low = min(low, max(hm, 0i)); high = max(high, hm);
-        }
-      }
-    } else {
-      for (var d = 0u; d < 4u; d++) {
-        let j = nbr8(k, d);
-        if (j != NONE) { low = min(low, max(e_get(E_H, j), 0i)); }
+    for (var d1 = 0u; d1 < 8u; d1++) {
+      let j = nbr8(k, d1);
+      if (j == NONE) { continue; }
+      let hj = e_get(E_H, j);
+      low = min(low, max(hj, 0i)); high = max(high, hj);
+      for (var d2 = 0u; d2 < 8u; d2++) {
+        if (d1 >= 4u && d2 == d1) { continue; }
+        let m = nbr8(j, d2);
+        if (m == NONE) { continue; }
+        let hm = e_get(E_H, m);
+        low = min(low, max(hm, 0i)); high = max(high, hm);
       }
     }
     var r = u32(high - max(low, 0i));
