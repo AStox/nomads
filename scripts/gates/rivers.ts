@@ -22,7 +22,7 @@
 
 export interface Flow { to: Int32Array; acc: Int32Array }
 
-class Heap {
+export class Heap {
   key: Float64Array; val: Int32Array; n = 0;
   constructor(cap: number) { this.key = new Float64Array(cap); this.val = new Int32Array(cap); }
   push(k: number, v: number) {
