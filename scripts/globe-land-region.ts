@@ -1,17 +1,16 @@
 // The fine tiers' erosion law on a test region (src/gpu/globe/land.ts): a square block of the 75 m planet (tier 5) or of the 150 m tier above it, of `--tiles` tier-5 tiles a side from tile
-// (--tx, --ty) of a face, started from tier 3's heights carried down (the chain's own carry; tier 3's file is made by `NOMADS_BAKE=$HOME/.cache/nomads-bakes/land bun scripts/globe-tiers.ts --seed 1
-// --key <key> --last 3`), the cells round it held (tier 5: at the bake's heights; tier 4: at the carried ones). The island's law as the fine tiers' solve: eight-neighbour routing, one rain,
-// an exact smooth uplift; the step length is a schedule. Resumable (state in $HOME/.cache/nomads-bakes/land/<name>/); pictures and measures with --render.
-//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --schedule 26x4,13x6,6.5x10,3.25x4,1.6x4 --uniform-rain --budget 230
-//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --uniform-rain --render --view 1024,1024,1024 --out $HOME/.cache/nomads-bakes/land/view/range.png
+// (--tx, --ty) of a face, started from tier 3's heights carried down (the chain's own carry; tier 3's file is made by `NOMADS_BAKE=/tmp/planet-75m/land bun scripts/globe-tiers.ts --seed 1
+// --key <key> --last 3`), the cells round it held (tier 5: at the bake's heights; tier 4: at the carried ones). The law is the tier's own, TIER_LAWS[tier] (src/gpu/globe/tiers.ts): its
+// routing, one rain, the band-limited hold and its schedule of step lengths; `--steps` stops short of the schedule. Resumable (state in /tmp/planet-75m/land/<name>/); pictures and measures with --render.
+//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --tier 4 --budget 230
+//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --tier 4 --render --view 1024,1024,1024 --out /tmp/planet-75m/land/view/range.png
 //   --tier 4            the region at the 150 m tier (a run of its own); --from4 <name> starts a tier-5 run from a tier-4 run's state
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { releaseGpu, theGpu } from "../src/gpu/device";
-import { defaultParams } from "../src/gpu/globe/erosion";
 import { LAND_HALO, LandRegion, readCells, refineRegion, regionBlock4, regionStart, type LandState } from "../src/gpu/globe/land";
-import { tierTable } from "../src/gpu/globe/regional";
-import { readPlanet, type Planet } from "../src/gpu/globe/window";
+import { TIER_LAWS, tierTableOf } from "../src/gpu/globe/tiers";
+import { readPlanet } from "../src/gpu/globe/window";
 import { patchAt } from "../src/gpu/globe/patch";
 import { BAKE } from "../src/gpu/globe/bakedir";
 import { STORE } from "./globe-planet";
@@ -27,27 +26,23 @@ const down = 2 ** (5 - TIER), size5 = tiles * 256, x05 = tx * 256, y05 = ty * 25
 const size = size5 / down, x0 = x05 / down, y0 = y05 / down, HL = 2, S = size + 2 * HL, cellM = 75 * down, per = 1 << TIER;
 const bake = arg("bake", `/tmp/planet-75m/${seed}-${key}`), LAND = arg("land-dir", process.env.NOMADS_LAND ?? "/tmp/planet-75m/land"), work = `${LAND}/${name}`;
 mkdirSync(work, { recursive: true });
-const nuc = Number(arg("nuc", "0")); // channel nucleation (src/gpu/globe/nucleation.ts): rms metres of the detail added to the start of this run's tier
-const dtMy = Number(arg("dt-my", "1")), nflow = Number(arg("nflow", "8")) as 4 | 8, budget = Number(arg("budget", "200")), uniform = flag("uniform-rain");
-const schedule = arg("schedule", "").split(",").filter(Boolean).map((e) => e.split("x").map(Number) as [number, number]);
-const dtAt = (step: number) => { let n = 0; for (const [dt, k] of schedule) { n += k; if (step < n) return dt; } return dtMy; };
-const scheduled = schedule.reduce((n, [, k]) => n + k, 0);
+const budget = Number(arg("budget", "200")), law = TIER_LAWS[TIER];
+const dtAt = (step: number) => law.dtMy[Math.min(step, law.dtMy.length - 1)];
 const t0 = performance.now(), spent = () => (performance.now() - t0) / 1000;
 
 const meta = () => (existsSync(join(work, "meta.json")) ? JSON.parse(readFileSync(join(work, "meta.json"), "utf8")) : { steps: 0 });
 const i32 = (path: string) => { const b = readFileSync(path); return new Int32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); };
 const readI32 = (f: string) => i32(join(work, f));
 const writeI32 = (f: string, a: Int32Array) => writeFileSync(join(work, f), new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
-const tableOf = (planet: Planet, dt: number) => tierTable(planet, TIER, defaultParams({ dtYr: dt * 1e6 }), uniform);
 
 // the start of the interior (a kept state, a tier-4 run's state carried down, or tier 3's heights carried down) and the patch's ring: tier 5 from the bake's heights (held), tier 4 from the carry
 function inputs() {
-  const kept = existsSync(join(work, "state.i32")), t4 = regionBlock4(i32(`${arg("t3dir", LAND)}/1-${key}/t3-height.i32`), face, x05, y05, size5, TIER === 4 ? nuc : 0), fn4 = 1024 * 4;
+  const kept = existsSync(join(work, "state.i32")), t4 = regionBlock4(i32(`${arg("t3dir", landDir)}/${seed}-${key}/t3-height.i32`), face, x05, y05, size5), fn4 = 1024 * 4;
   const from4 = arg("from4", "");
   if (from4) { const s4 = i32(`${LAND}/${from4}/state.i32`), n4 = size5 / 2; for (let y = 0; y < n4; y++) for (let x = 0; x < n4; x++) t4[(face * fn4 + y05 / 2 + y) * fn4 + x05 / 2 + x] = s4[y * n4 + x]; }
   const p = patchAt(TIER, face, x0, y0, HL, size);
   let interior: Int32Array, h: Int32Array, fl: Int32Array;
-  if (TIER === 5) { interior = kept ? readI32("state.i32") : regionStart(t4, face, x05, y05, size5, nuc); h = readCells(join(bake, "t5-height.i32"), p.ids); fl = readCells(join(bake, "t5-flooded.i32"), p.ids); }
+  if (TIER === 5) { interior = kept ? readI32("state.i32") : regionStart(t4, face, x05, y05, size5); h = readCells(join(bake, "t5-height.i32"), p.ids); fl = readCells(join(bake, "t5-flooded.i32"), p.ids); }
   else { h = Int32Array.from(p.ids, (id) => t4[id]); fl = Int32Array.from(h); interior = kept ? readI32("state.i32") : new Int32Array(size * size); if (!kept) for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) interior[y * size + x] = h[(y + HL) * S + x + HL]; }
   // --ring-carry: the ring round a tier-5 region from the tier-4 cells carried down (the run's own surface), not from a bake of another chain
   if (TIER === 5 && flag("ring-carry")) {
@@ -59,11 +54,11 @@ function inputs() {
 }
 const interiorOf = (h: Int32Array) => { const inner = new Int32Array(size * size); for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) inner[y * size + x] = h[(y + HL) * S + x + HL]; return inner; };
 
-const planet = await readPlanet(seed, diskStore(arg("store", STORE), key)), gpu = await theGpu();
+const planet = await readPlanet(seed, diskStore(arg("store", STORE), key)), gpu = await theGpu(), tableAt = tierTableOf(planet, TIER);
 try {
   const m = meta(), { h, fl, kept } = inputs();
   console.log(`tier ${TIER} region ${size}x${size} face ${face} at ${x0},${y0}, planet and start ${spent().toFixed(1)} s, ${m.steps} steps kept`);
-  const r = new LandRegion(gpu, TIER, face, x0, y0, size, tableOf(planet, schedule.length ? dtAt(m.steps) : dtMy), h, fl, { nflow, stochastic: flag("stochastic"), rho8: flag("rho8") || flag("final-rho8"), smooth: Number(arg("smooth", "0")), band: process.env.NOMADS_BAND_SPAN === "1" ? 1 : process.env.NOMADS_BAND_SPAN === "2" ? 2 : undefined, slide: flag("slide16") ? 16 : 8 });
+  const r = new LandRegion(gpu, TIER, face, x0, y0, size, tableAt(m.steps), h, fl, law.route);
   if (kept) r.load({ height: h, carry: readI32("carry.i32"), steps: m.steps } as LandState);
 
   if (flag("render")) {
@@ -82,7 +77,7 @@ try {
     for (let y = margin; y < size - margin; y++) for (let x = margin; x < size - margin; x++) live[(y + HL) * S + x + HL] = height[(y + HL) * S + x + HL] > 0 ? 1 : 0;
     const cells = new Float64Array(S * S);
     for (let k = 0; k < cells.length; k++) cells[k] = acc[k] / 512;
-    const res: Record<string, unknown> = { tier: TIER, steps: m.steps, nflow, lattice30: lattice(to, cells, S, live, 30, 8), lattice300: lattice(to, cells, S, live, 300, 8), tauMy: +(responseYears(to, cells, S, live, 7.07e-8, cellM) / 1e6).toFixed(0) };
+    const res: Record<string, unknown> = { tier: TIER, steps: m.steps, nflow: law.route.nflow, lattice30: lattice(to, cells, S, live, 30, 8), lattice300: lattice(to, cells, S, live, 300, 8), tauMy: +(responseYears(to, cells, S, live, 7.07e-8, cellM) / 1e6).toFixed(0) };
     // each tier-0 cell's mean height in the region (all its children) against the planet's: the means the lift holds
     const err: number[] = [];
     for (let py = 0; py < size / per; py++) for (let px = 0; px < size / per; px++) {
@@ -115,22 +110,22 @@ try {
     writeFileSync(join(work, "measures.json"), JSON.stringify(res));
     console.log(`rendered ${out} after ${m.steps} steps (${spent().toFixed(0)} s)`);
   } else {
-    const maxSteps = schedule.length ? scheduled : Number(arg("steps", "20"));
+    const maxSteps = Number(arg("steps", String(law.dtMy.length)));
     console.log(`creep substeps ${r.subs}`);
     let landCells = 0;
     for (let k = 0; k < S * S; k++) if (h[k] > 0) landCells++;
-    let last = 0, curDt = schedule.length ? dtAt(m.steps) : dtMy;
+    let last = 0, curDt = dtAt(m.steps);
     while (r.steps < maxSteps) {
       if (spent() + last * 1.3 + 25 > budget) break;
       const s0 = performance.now();
-      if (schedule.length && dtAt(r.steps) !== curDt) { curDt = dtAt(r.steps); r.setTable(tableOf(planet, curDt)); }
+      if (dtAt(r.steps) !== curDt) { curDt = dtAt(r.steps); r.setTable(tableAt(r.steps)); }
       await r.step();
       last = (performance.now() - s0) / 1000;
       console.log(`step ${r.steps} ${last.toFixed(1)} s, dt ${curDt} My, flood ${r.lastRounds}, slide ${r.lastSlide}, mean loss ${((r.loss / 256 / (curDt * landCells))).toFixed(3)} m/My, ${JSON.stringify(Object.fromEntries(Object.entries(r.seconds).map(([k, v]) => [k, +v.toFixed(1)])))}`);
     }
     const st = await r.state();
     writeI32("state.i32", interiorOf(st.height)); writeI32("carry.i32", st.carry);
-    writeFileSync(join(work, "meta.json"), JSON.stringify({ steps: r.steps, dtMy, nflow, schedule }));
+    writeFileSync(join(work, "meta.json"), JSON.stringify({ steps: r.steps }));
     console.log(`${r.steps} of ${maxSteps} steps kept (${spent().toFixed(0)} s this call)`);
   }
   r.release();

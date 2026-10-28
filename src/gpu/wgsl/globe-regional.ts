@@ -154,14 +154,10 @@ fn flood(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
 }
 
 // ---- receivers: steepest descent on the flooded surface, the sea ending every river ----
-// With the routing parameter P[3] = 1 the receiver is instead drawn among the lower neighbours with the probability proportional to the fall to each over its distance, anew each step (P[2]):
-// the draw Tarboton 1997 reads Fairfield and Leymarie 1991 to make, their remedy for the grid bias of steepest descent, which sends water down any slope within 22.5 degrees of a lattice
-// direction along that direction. Every lower neighbour is a valid receiver (the flooded surface falls strictly along it), so the forest stays a forest; the draw is a Philox word of the cell's
-// own id, so it is the same for the same cell whatever the tiling.
-// With P[3] = 2 (Rho8, Fairfield and Leymarie 1991 as WhiteboxTools rho8_pointer has it: the fall to a cardinal neighbour over 1, to a diagonal one over 2 - r, r uniform in [0, 1), a draw
-// for each diagonal link and step) the receiver is the steepest of those: the lower neighbours only, so again every receiver is strictly lower on the flooded surface and no chain can loop.
-// On the sphere the diagonal link has its own length (the table's inverse length), so the draw scales that link by (2 - r) / sqrt 2, which is 2 - r on a square grid, where the diagonal
-// is sqrt 2 long: in integers the link's inverse length is multiplied by sqrt 2 x 2^16 / (2 - r) / 2^16 (sqrt 2 x 2^16 = 92682). The incision still reads the link's true length.
+// With the routing parameter P[3] set, the receiver is instead drawn among the lower neighbours with the probability proportional to the fall to each over its distance, anew each step (P[2]):
+// Fairfield and Leymarie's remedy for the grid bias of steepest descent, which sends water down any slope within 22.5 degrees of a lattice direction along that direction [Tarboton 1997 reads
+// and cites it]. Every lower neighbour is a valid receiver (the flooded surface falls strictly along it), so the forest stays a forest; the draw is a Philox word of the cell's own id, so
+// it is the same for the same cell whatever the tiling.
 fn philox(c0: vec4u, k0: vec2u) -> vec4u {
   var c = c0; var k = k0;
   for (var r = 0u; r < 10u; r++) {
@@ -177,8 +173,6 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
   let k = gk(gid, nwg);
   if (k >= N) { return; }
   var to = k; var rd = 0u; var best = vec2u(0u, 0u);
-  var rw = vec4u(0u, 0u, 0u, 0u);
-  if (P[3] == 2u && interior(k) && is_land(k)) { rw = philox(vec4u(cid(k), P[2], FN, 0x52484f38u), vec2u(0x4c414e44u, 0x524f5554u)); }
   if (interior(k) && is_land(k)) {
     let f = fl(k);
     var share = array<u32, 8>(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u); var total = 0u;
@@ -187,15 +181,11 @@ fn recv(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg:
       if (j == NONE) { continue; }
       let dz = f - fl(j);
       if (dz <= 0i) { continue; }
-      let iv = invd(k, d);
-      var ev = iv;
-      if (P[3] == 2u && d >= 4u) { ev = shr64(mul64(iv, (92682u << 15u) / ((131072u - (rw[d - 4u] & 0xffffu)) >> 1u)), 16u).x; }
-      let key = mul64(u32(dz), ev);
-      if (lt64(best, key)) { best = key; to = j; rd = iv; }
-      let skey = mul64(u32(dz), iv);
-      share[d] = max(1u, min(shr64(skey, 16u).x, 0x0fffffffu)); total += share[d];
+      let key = mul64(u32(dz), invd(k, d));
+      if (lt64(best, key)) { best = key; to = j; rd = invd(k, d); }
+      share[d] = max(1u, min(shr64(key, 16u).x, 0x0fffffffu)); total += share[d];
     }
-    if (P[3] == 1u && total > 0u) {
+    if (P[3] != 0u && total > 0u) {
       let r = philox(vec4u(cid(k), P[2], 0u, 0x52434456u), vec2u(0x4c414e44u, 0x524f5554u)).x % total;
       var acc = 0u;
       for (var d = 0u; d < NFLOW; d++) {
@@ -388,31 +378,6 @@ fn reach64(@builtin(local_invocation_index) t: u32) {
 // n = 1 (m = 1/2): h' = h_r + (h - h_r) / (1 + f), f = K dt sqrt(A) / d, Braun and Willett 2013. A is the discharge area at the reference rain.
 // a cell the step leaves as it is whatever its receiver does: sea, a lake (the flooded surface above it) or rock with no erodibility
 fn incise_skip(k: u32) -> bool { let hk = e_get(E_H, k); return hk <= 0i || fl(k) > hk || e_getu(E_KQ, k) == 0u; }
-// The area the incision reads. With P[4] = r > 0 the mean of the discharge areas of the land cells of the (2r + 1) by (2r + 1) window round the cell (Perron, Kirchner and Dietrich 2009,
-// Nature 460, supplementary information 1.2: the drainage area field smoothed by a square moving average each step so the valley spacing does not depend on the grid): each cell
-// adds its area over the window's land count, so no sum passes 32 bits. Only the incision reads it; the discharge itself, and the order, are untouched. Cells off the patch's interior
-// and the sea are left out of the window (a river's mouth cell holds the whole river).
-fn walk(k: u32, dx: i32, dy: i32) -> u32 {
-  var j = k;
-  for (var i = 0; i < abs(dx); i++) { if (j == NONE) { break; } j = nbr(j, select(2u, 0u, dx > 0)); }
-  for (var i = 0; i < abs(dy); i++) { if (j == NONE) { break; } j = nbr(j, select(3u, 1u, dy > 0)); }
-  return j;
-}
-fn acc_s(k: u32) -> u32 {
-  let r = i32(P[4]);
-  if (r == 0i) { return e_getu(E_ACC, k); }
-  var n = 0u;
-  for (var dy = -r; dy <= r; dy++) { for (var dx = -r; dx <= r; dx++) {
-    let j = walk(k, dx, dy);
-    if (j != NONE && interior(j) && is_land(j)) { n++; }
-  } }
-  var s = 0u;
-  for (var dy = -r; dy <= r; dy++) { for (var dx = -r; dx <= r; dx++) {
-    let j = walk(k, dx, dy);
-    if (j != NONE && interior(j) && is_land(j)) { s += e_getu(E_ACC, j) / n; }
-  } }
-  return s;
-}
 // the step of a cell that is not skipped, given its receiver j at its final height
 fn incise_one(k: u32, j: u32) {
   let hk = e_get(E_H, k);
@@ -420,7 +385,7 @@ fn incise_one(k: u32, j: u32) {
   if (is_land(j)) { hj = e_get(E_H, j); }
   if (hj >= hk) { return; }
   let kc = e_getu(E_KQ, k);
-  let acc = acc_s(k); let rd = e_getu(E_RD, k);
+  let acc = e_getu(E_ACC, k); let rd = e_getu(E_RD, k);
   let delta = u32(hk - hj);
   var x = delta;
   let s8 = sqrt64(vec2u(acc << 16u, acc >> 16u));

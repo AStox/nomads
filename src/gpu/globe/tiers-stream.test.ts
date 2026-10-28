@@ -108,8 +108,8 @@ describe("the streamed step", () => {
     for (const [o, budget] of [[{ block: 1 }, Infinity], [{ block: 4 }, Infinity], [{ block: 2, order: "reverse" as const }, Infinity], [{ block: 1, order: 5 }, Infinity], [{ block: 2 }, 0.6]] as const) equal(want, await streamed(work(), 3, o, budget, law));
   }, 280_000);
 
-  test("the band-limited hold of span 2 with Rho8 receivers is the in-memory solve's bytes in blocks of 1, 2 and 4 tiles, in another order and in short calls, and is not the box hold's", async () => {
-    const law = islandLaw([26, 6.5, 1.6], 16, { rho8: true, band: 2 }), want = await oracle(3, law), box = await oracle(3, islandLaw([26, 6.5, 1.6], 16, { rho8: true }));
+  test("the band-limited hold of span 2 is the in-memory solve's bytes in blocks of 1, 2 and 4 tiles, in another order and in short calls, and is not the box hold's", async () => {
+    const law = islandLaw([26, 6.5, 1.6], 16, { band: 2 }), want = await oracle(3, law), box = await oracle(3, islandLaw([26, 6.5, 1.6]));
     expect(same(want.height, box.height)).not.toBe(-1);
     for (const [o, budget] of [[{ block: 1 }, Infinity], [{ block: 4 }, Infinity], [{ block: 2, order: "reverse" as const }, Infinity], [{ block: 1, order: 5 }, Infinity], [{ block: 2 }, 0.6]] as const) equal(want, await streamed(work(), 3, o, budget, law));
   }, 280_000);

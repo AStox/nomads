@@ -1,6 +1,6 @@
 // The band-limited hold (the quadratic B-spline moment of the land's loss on the tier-0 lattice, or on every second tier-0 cell at span 2), ported from the band-limited hold note's kernels
-// (docs/research/globe/2026-10-24-band-limited-hold.md) beside the box hold, which stays the default: the same entry points under another name (b-prefixed), laid over the same AT words after
-// the counters, a tier uses one or the other. Whole-tier path only (the patch path keeps the box hold).
+// (docs/research/globe/2026-10-24-band-limited-hold.md) beside the box hold, which tiers that run without it keep: the same entry points under another name (b-prefixed), laid over the
+// same AT words after the counters, a tier uses one or the other. The whole-tier, patch and streamed paths all have it.
 export const BAND_PARENT_WORDS = 73;
 export const BAND_CNT = { clamped: 4, dropped: 5 } as const;
 export const BAND_FLAG_CARRY = 8;
