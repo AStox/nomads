@@ -9,7 +9,7 @@
 //  components      land components by 4-neighbour connection across the cube's face edges (grid.ts step); the count, the largest five as a share of the planet's area and the land's.
 //  relief10        the share of land windows (`inland`: every cell of the disc above sea level; `centred`: centred on a land cell, a coastal disc then reaches the shelf) whose 10 km relief exceeds 1000 / 1500 / 2000 m; relief = maximum minus minimum height of the cells whose centres lie within 5 km of the
 //                  window's centre cell (a disc of radius 5 km in the local cell width, equals the chain's 21-cell window at the mean tier-0 width 2,211 m); windows are the land cells (tier 0) or
-//                  every 4th land cell in X and Y (tier 3, `stride`), area weighted. Earth: under 5 % of land above 1000 m and under 2 % above 1500 m (Montgomery and Brandon 2002, Earth Planet.
+//                  every 2nd land cell in X and Y (tier 3, `stride`), area weighted. Earth: under 5 % of land above 1000 m and under 2 % above 1500 m (Montgomery and Brandon 2002, Earth Planet.
 //                  Sci. Lett. 201, 481-489).
 //  summit          the highest cell: height, latitude, longitude, face and cell.
 //  coastRuns       (tier 0) the coast as the closed polylines of cell corners between a land cell and a sea cell (4-neighbour); runs by a greedy partition from each loop's first corner,
