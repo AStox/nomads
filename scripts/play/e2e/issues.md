@@ -1,6 +1,6 @@
-# Globe e2e tester issues (round 27 (published site 837e168, the sea))
+# Globe e2e tester issues (round 28 (published site 525a55e, arrivals))
 
-Round 27 on the published site, build 837e168 (sea at zoom -1 to 3: swell bands, no streaks; site files 11:41 ET Oct 28): sea stills, pan tests, and the replays of the random wheel bursts. 20 issues: 8 fixed, 9 improved, 3 open. No crash, no stall, no console error.
+Round 28 on the published site, build 525a55e (arrivals: sooner and a smaller pop; site files 22:30 ET Oct 28): arrsettle.ts twice (12 places and zooms), arrival frames at A zoom 2 and 3 and B zoom 3, and 4 sessions (seeds 210 to 213). 20 issues: 8 fixed, 10 improved, 2 open. No crash, no console error except aborted tile requests.
 
 ## 1. Dragging lurches the picture by up to a whole screen between two frames
 - Severity: visibly broken
@@ -112,7 +112,7 @@ Round 27 on the published site, build 837e168 (sea at zoom -1 to 3: swell bands,
 
 ## 13. Frame stalls of 120 to 216 ms on the home island at zoom 1.3 to 4.4
 - Severity: polish
-- Seen: Round 20: not seen.
+- Seen: Round 20: not seen. Round 28: sessions 210 to 213: frame gaps 83 ms (seed 211 at 99.3 s, 12.11 N 83.91 E zoom 4.81) and 50 ms (seed 213 at 37.6 s, B zoom -1.45), the rest 33 ms: one mild stall.
 - Status: fixed on 1c4111b: arrival test at 10 far places and 2 zooms, 20 arrivals: 0 frame gaps over 60 ms; 4 sessions: no stall hit (before: 120 to 216 ms in rounds 9 and 15)
 - Matches fixlist: new (near fixlist perf items)
 - Repro: seed 55, 1280x800, frames k595 to k606 (51.3 to 52.9 s) midWalk at zoom 4.4 to 2.9; seed 50 k305 to k325
@@ -175,9 +175,9 @@ Round 27 on the published site, build 837e168 (sea at zoom -1 to 3: swell bands,
 
 ## 20. After arriving at a place, the picture is a blurry other picture for 1 to 3.5 seconds, then pops to the final one
 - Severity: noticeable
-- Seen: Right after look.ts reaches 25 N 15 E zoom 2 (page idle reports done) the picture is uncorrelated with the final one (corr 0.00 to 0.05 for the first 0.5 s, 0.47 at 1.1 s, 0.86 at 2 s, 0.99 at 3 s, 1.0 after 3.5 s). At 15.02 N 71.76 W zoom 3 the first frame is 0.91 like the last, so it is steady at once there. A wheel tick in and out at zoom 2 settles in 0.7 s. At zoom 5 and above the sea is steady. Round 26 (arrsettle): same as round 25. Sea arrivals right from the first frame (0.84 to 0.94, final by 0.1 to 1.5 s); land arrivals uncorrelated for 1.4 to 3.3 s then pop: A zoom 2 3.3 s, A 3 2.5 s, M 3 2.9 s, B 3 2.2 s, home 3 2.0 s, R 4 1.4 s, E2 2 1.5 s; A zoom 4 at once.
-- Status: improved for the sea on 14f4382: 25 N 15 E zoom 2 and 15.02 N 71.76 W zoom 2 are 0.88 like the final from the first frame and are settled in 1 to 2 s (was 0.00 for 1 s and 3.5 s), zoom 3 at 25 N 15 E 0.84 to 1.0 in 0.5 s. NOT for land: after a far jump the picture at A zoom 2 and 3, B 3, home 3, M 3, R 4 and E2 2 is uncorrelated with the final one (corr 0.0 to 0.4) for 1 to 3.5 s and then pops to the final (A zoom 2 3.5 s, A 3 2.7 s, M 3 2.8 s, home 3 2.5 s, B 3 2.3 s, R 4 1.7 s, E2 2 1.7 s). A zoom 4 is right at once (0.88), 15 N 71 W zoom 4 in 0.2 s (evid/arrival-A-z3-r25.jpg: first frames a smooth olive picture, 2.2 s a forest and sand picture with a stream)
+- Seen: Right after look.ts reaches 25 N 15 E zoom 2 (page idle reports done) the picture is uncorrelated with the final one (corr 0.00 to 0.05 for the first 0.5 s, 0.47 at 1.1 s, 0.86 at 2 s, 0.99 at 3 s, 1.0 after 3.5 s). At 15.02 N 71.76 W zoom 3 the first frame is 0.91 like the last, so it is steady at once there. A wheel tick in and out at zoom 2 settles in 0.7 s. At zoom 5 and above the sea is steady. Round 26 (arrsettle): same as round 25. Sea arrivals right from the first frame (0.84 to 0.94, final by 0.1 to 1.5 s); land arrivals uncorrelated for 1.4 to 3.3 s then pop: A zoom 2 3.3 s, A 3 2.5 s, M 3 2.9 s, B 3 2.2 s, home 3 2.0 s, R 4 1.4 s, E2 2 1.5 s; A zoom 4 at once. Round 28: see status.
+- Status: improved on 525a55e (arrsettle t90, correlation 0.9 with the final picture, two runs each; before in brackets, ms): A z2 1156 and 1185 (3306), A z3 2405 and 2365 (2464), A z4 90 (240), B z3 2017 and 2082 (2152), home z3 1786 and 1710 (1963), M z3 1767 and 1741 (2936), E2 z2 1145 and 1188 (1494), R z4 1970 and 2013 (1443, slower), sea 25 N 15 E z2 1147 (1465), z3 1119 (555, slower), 15 N 71 W z2 952 (929), z4 1343 (69, slower). Frames (evid/arrival-A3-r29.jpg, A2, B3): at 60 ms a smooth blurred ground of the right colours, from 400 ms the right shapes (forest, sand, shadows) in softer detail and a darker green, at 1.5 s the fine detail and bright green arrive in one step (a visible pop of colour and detail, smaller than before), and at A zoom 3 the stream and trees come with it. No hole, no slide and no popping trees seen; the 0.5 s ladder fade is not visible as a separate step. The first frame correlation to the final one is 0 on land at zoom 2 to 3 (the first picture is smooth), 0.71 to 0.86 on sea
 - Matches fixlist: new (waves at every zoom)
 - Repro: settle2.ts 25 15 2 13 (screenshots every 200 ms after the jump)
 - Expected: 
-- Evidence: evid/arrival-A-z3-r25.jpg
+- Evidence: evid/arrival-A-z3-r25.jpg, evid/arrival-A3-r29.jpg, evid/arrival-A2-r29.jpg, evid/arrival-B3-r29.jpg
