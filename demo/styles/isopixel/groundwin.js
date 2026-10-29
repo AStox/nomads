@@ -514,19 +514,33 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     // the runs of the tiles with blocks to make (all of them, the first time, for the estimates)
     const todoOf = () => need.filter((r) => { const b = cache.get(r.key); return !b || b.k > needK(r); });
     const open = k0 === null ? need : todoOf();
-    // the runs of the tiles the blocks `recs` stand on, each over the cells its blocks cover: opened one at a time (a run holds the tile's entries on the GPU, and the counting and scan of four at once are the peak of a window's make)
+    // the runs of the tiles the blocks `recs` stand on, each over the cells its blocks cover. A run holds the tile's entries on the GPU, and the counting and scan of four at once are the peak of a window's
+    // make, so a tile's run is begun when the one before has its fields on the GPU, not before: its streams and packed planes (the worker's 20 to 30 ms of the CPU, the GPU idle) are made while the one before
+    // counts. One error scope for them all (scopes nest, and runs that overlap would pop each other's).
     const openFor = async (recs) => {
       const byTile = new Map(), got = [];
       for (const r of recs) { if (!byTile.has(r.t.tile)) byTile.set(r.t.tile, { t: r.t, rec: [] }); byTile.get(r.t.tile).rec.push(r); }
-      try {
-        for (const { t, rec } of byTile.values()) {
-          const lo = (v) => Math.max(0, Math.min(...rec.map(v)) * BLOCK - 1), hi = (v) => Math.min(256, (Math.max(...rec.map(v)) + 1) * BLOCK + 1);
-          const rx = lo((r) => r.bx), ry = lo((r) => r.by), rect = { x0: rx, y0: ry, w: hi((r) => r.bx) - rx, h: hi((r) => r.by) - ry };
-          const run = await noOom(() => T.openTile(gpu, tier, { tile: t.tile, source: T.tileSource(t.gt), rect, a0: t.tx * 256 * UNITS, a1: t.ty * 256 * UNITS, s0x: 0, s0y: 0, w0x: 0, w0y: 0, d0: 1, d1: 0 }, seed, { caps: BLOCK_CAPS }), (r) => r.close());
-          got.push({ t, rec, run });
+      return noOom(async () => {
+        const pending = [];
+        let ready = Promise.resolve();
+        try {
+          for (const { t, rec } of byTile.values()) {
+            await ready;
+            const lo = (v) => Math.max(0, Math.min(...rec.map(v)) * BLOCK - 1), hi = (v) => Math.min(256, (Math.max(...rec.map(v)) + 1) * BLOCK + 1);
+            const rx = lo((r) => r.bx), ry = lo((r) => r.by), rect = { x0: rx, y0: ry, w: hi((r) => r.bx) - rx, h: hi((r) => r.by) - ry }, fields = Promise.withResolvers();
+            const opening = T.openTile(gpu, tier, { tile: t.tile, source: T.tileSource(t.gt), rect, a0: t.tx * 256 * UNITS, a1: t.ty * 256 * UNITS, s0x: 0, s0y: 0, w0x: 0, w0y: 0, d0: 1, d1: 0 }, seed, { caps: BLOCK_CAPS, onFields: fields.resolve }).then((run) => { got.push({ t, rec, run }); });
+            opening.catch(() => fields.resolve());
+            pending.push(opening);
+            ready = fields.promise;
+          }
+          await Promise.all(pending);
+        } catch (err) {
+          await Promise.allSettled(pending);
+          for (const { run } of got) run.close();
+          throw err;
         }
-      } catch (err) { for (const { run } of got) run.close(); throw err; }
-      return got;
+        return got;
+      }, (g) => { for (const { run } of g) run.close(); });
     };
     tr("mk0", open.length);
     const opened = await openFor(open), held = new Map(), fresh = [];

@@ -86,8 +86,9 @@ const frameOf = (tile: PlaceTile, b: BlockSpec) => b.turn
 // One run of a tile's scatter over `tile.rect` (the cells the blocks asked of it cover), from which any number of blocks are made, each in its own frame (x east, z south, mm from the block's
 // north-west corner; `tile.a0`, `a1` the tile's corner in units, which the blocks' frames hang from), so the tile's tables and counts are made once however many blocks there are. The same
 // entries as the window's, thinned by the same hash: a block at share 2^-k holds exactly those of the window's at 2^-k that lie in it. `close` lets the run go.
-export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: number, o: { caps: number[] }) {
+export async function openTile(g: Gpu, tier: number, tile: PlaceTile, seed: number, o: { caps: number[]; onFields?: () => void }) {
   const ctx = { gpu: g, tier }, top = o.caps[o.caps.length - 1], f = await tileFields(ctx, tile.tile, tile.source, WINDOW_HALO, true);
+  o.onFields?.();
   const run = await objectsGpu(g, f.L, f.K, f.packed, f.field, seed, keyOf(tile.tile), tile.rect, false);
   await objectsWrite(g, f.L, f.K, f.packed, f.field, run);
   const span = run.to - run.from;
