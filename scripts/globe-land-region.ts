@@ -1,9 +1,9 @@
 // The fine tiers' erosion law on a test region (src/gpu/globe/land.ts): a square block of the 75 m planet (tier 5) or of the 150 m tier above it, of `--tiles` tier-5 tiles a side from tile
-// (--tx, --ty) of a face, started from tier 3's heights carried down (the chain's own carry; tier 3's file is made by `NOMADS_BAKE=/tmp/planet-75m/land bun scripts/globe-tiers.ts --seed 1
+// (--tx, --ty) of a face, started from tier 3's heights carried down (the chain's own carry; tier 3's file is made by `NOMADS_BAKE=$HOME/.cache/nomads-bakes/land bun scripts/globe-tiers.ts --seed 1
 // --key <key> --last 3`), the cells round it held (tier 5: at the bake's heights; tier 4: at the carried ones). The law is the tier's own, TIER_LAWS[tier] (src/gpu/globe/tiers.ts): its
-// routing, one rain, the band-limited hold and its schedule of step lengths; `--steps` stops short of the schedule. Resumable (state in /tmp/planet-75m/land/<name>/); pictures and measures with --render.
+// routing, one rain, the band-limited hold and its schedule of step lengths; `--steps` stops short of the schedule. Resumable (state in $HOME/.cache/nomads-bakes/land/<name>/); pictures and measures with --render.
 //   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --tier 4 --budget 230
-//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --tier 4 --render --view 1024,1024,1024 --out /tmp/planet-75m/land/view/range.png
+//   lockf /tmp/nomads-gpu.lock bun scripts/globe-land-region.ts --name range --face 0 --tx 19 --ty 12 --tiles 12 --tier 4 --render --view 1024,1024,1024 --out $HOME/.cache/nomads-bakes/land/view/range.png
 //   --tier 4            the region at the 150 m tier (a run of its own); --from4 <name> starts a tier-5 run from a tier-4 run's state
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,8 +11,8 @@ import { releaseGpu, theGpu } from "../src/gpu/device";
 import { LAND_HALO, LandRegion, readCells, refineRegion, regionBlock4, regionStart, type LandState } from "../src/gpu/globe/land";
 import { TIER_LAWS, tierTableOf } from "../src/gpu/globe/tiers";
 import { readPlanet } from "../src/gpu/globe/window";
-import { patchAt } from "../src/gpu/globe/patch";
 import { BAKE } from "../src/gpu/globe/bakedir";
+import { patchAt } from "../src/gpu/globe/patch";
 import { STORE } from "./globe-planet";
 import { diskStore } from "./globe-window";
 import { diagonalPower, measures } from "./globe-land-real";
@@ -39,7 +39,7 @@ const writeI32 = (f: string, a: Int32Array) => writeFileSync(join(work, f), new 
 function inputs() {
   const kept = existsSync(join(work, "state.i32")), t4 = regionBlock4(i32(`${arg("t3dir", landDir)}/${seed}-${key}/t3-height.i32`), face, x05, y05, size5), fn4 = 1024 * 4;
   const from4 = arg("from4", "");
-  if (from4) { const s4 = i32(`${LAND}/${from4}/state.i32`), n4 = size5 / 2; for (let y = 0; y < n4; y++) for (let x = 0; x < n4; x++) t4[(face * fn4 + y05 / 2 + y) * fn4 + x05 / 2 + x] = s4[y * n4 + x]; }
+  if (from4) { const s4 = i32(join(landDir, from4, "state.i32")), n4 = size5 / 2; for (let y = 0; y < n4; y++) for (let x = 0; x < n4; x++) t4[(face * fn4 + y05 / 2 + y) * fn4 + x05 / 2 + x] = s4[y * n4 + x]; }
   const p = patchAt(TIER, face, x0, y0, HL, size);
   let interior: Int32Array, h: Int32Array, fl: Int32Array;
   if (TIER === 5) { interior = kept ? readI32("state.i32") : regionStart(t4, face, x05, y05, size5); h = readCells(join(bake, "t5-height.i32"), p.ids); fl = readCells(join(bake, "t5-flooded.i32"), p.ids); }
@@ -68,8 +68,6 @@ try {
     const dump = (f: string, v: ArrayLike<number>) => { const o = new Int32Array(1 + v.length); o[0] = S; for (let k = 0; k < v.length; k++) o[k + 1] = v[k]; writeFileSync(join(work, f), new Uint8Array(o.buffer)); };
     dump("flow.bin", to); dump("acc.bin", acc);
     const at = (x: number, y: number) => ((Math.min(size - 1, Math.max(0, y)) + HL) * S + Math.min(size - 1, Math.max(0, x)) + HL);
-    const dump = (f: string, a: ArrayLike<number>) => { const o = new Int32Array(1 + a.length); o[0] = S; for (let k = 0; k < a.length; k++) o[k + 1] = a[k]; writeFileSync(join(work, f), new Uint8Array(o.buffer)); };
-    dump("flow.bin", to); dump("acc.bin", acc);
     const v = arg("view", `0,0,${size}`).split(",").map(Number) as [number, number, number], out = arg("out", join(work, "view.png"));
     writeFileSync(out, renderLand((x, y) => height[at(x, y)] / 256, (x, y) => acc[at(x, y)] / 512, v, Number(arg("scale", "2")), Number(arg("river", "100")), Number(arg("vex", "0")), cellM));
     // measures over the interior's land, from a margin of 64 cells in (the held ring's reach)
@@ -95,7 +93,7 @@ try {
     for (const b of [per, per / 2, per / 4, per / 8]) res[`blockStep${b}`] = +blockStep(height, S, live, b, 0).toFixed(3);
     if (flag("diff")) {
       // the height difference to another run's state over the land, from the margin in: rms, and of its slopes' rms (the finer texture)
-      const o = i32(`${LAND}/${arg("diff", "")}/state.i32`);
+      const o = i32(join(landDir, arg("diff", ""), "state.i32"));
       let n = 0, sq = 0, ssq = 0, ssl = 0;
       for (let y = margin; y < size - margin; y++) for (let x = margin; x < size - margin; x++) {
         const k = (y + HL) * S + x + HL, ko = y * size + x;
