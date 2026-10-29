@@ -25,10 +25,10 @@ const SCHEDULE = [...Array(4).fill(26), ...Array(6).fill(13), ...Array(10).fill(
 const ISLAND: TierLaw = { route: { nflow: 8, stochastic: true, slide: 16 }, dtMy: SCHEDULE, uniformRain: true };
 // Tiers 4 and 5 hold the land's loss by the band-limited hold of span 2 (wgsl/globe-band-hold.ts), not by each tier-0 cell's box mean.
 const BANDED: RouteLaw = { ...ISLAND.route, band: 2 };
-export const TIER_LAWS: readonly TierLaw[] = [ISLAND, { ...ISLAND, route: BANDED }, { ...ISLAND, route: BANDED }, { ...ISLAND, route: BANDED }, { ...ISLAND, route: BANDED }, { ...ISLAND, route: BANDED, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }];
+export const TIER_LAWS: readonly TierLaw[] = [ISLAND, ISLAND, ISLAND, ISLAND, { ...ISLAND, route: BANDED }, { ...ISLAND, route: BANDED, dtMy: [6.5, 6.5, 3.25, 3.25, 1.6, 1.6] }];
 // Tiers 1 to 3 do no erosion: a tier erodes only where its cells resolve a valley spacing (1.25 to 2.5 cells at tier 1 is not enough room) [design], so each is the smooth carry of the tier
 // above (its cell means are its parent's by construction of refineSmooth, which are tier 0's) and tier 4 holds those means. Their laws are for a run that gives them steps.
-const FIRST_ERODED_TIER = 1;
+const FIRST_ERODED_TIER = 4;
 export const TIER_STEPS = TIER_LAWS.map((l, t) => (t < FIRST_ERODED_TIER ? 0 : l.dtMy.length));
 // A tier's table (the K dt and the creep coefficients) of step number `step`, made once for each step length.
 export function tierTableOf(planet: Planet, tier: number): (step: number) => Uint32Array {
