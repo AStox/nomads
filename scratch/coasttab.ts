@@ -9,10 +9,10 @@ const r = raw(), g = r.grid, N = r.n, fn = g.fn, nb = neighbours(g), k = r.meta.
 const set = makeSetup({ seed: 1, spanMy: CHAIN.spanMy, plates: CHAIN.plates, seaLevel: 0, radius: PLANET_RADIUS_M });
 const bd = classifyBoundaries(g, r.plate, set.plates);
 const h = r.height, land = (i: number) => h[i] > 0, cont = (i: number) => r.granitoid[i] + r.metaSed[i] + r.volcanic[i];
-const NAMES = ["PASSIVE", "ACTIVE", "OTHER"], BINS = ["<1", "1-10", "10-30", "30-100", "100-300", "300-1000", ">1000"];
+const LINE = 40, NAMES = ["PASSIVE", "ACTIVE", "OTHER"], BINS = ["<1", "1-10", "10-30", "30-100", "100-300", "300-1000", ">1000"];
 const binOf = (d: number) => (d < 1 ? 0 : d < 10 ? 1 : d < 30 ? 2 : d < 100 ? 3 : d < 300 ? 4 : d < 1000 ? 5 : 6);
 const rows: string[] = ["face,X,Y,landH,deepD,shallowD,seaSed,seaCont,seaBasalt,seaAgeMy,plateL,plateS,clsL,speedL,clsS,speedS,acc,mouth,dep3km3,depth10,margin"];
-const stat: { cls: number; dBin: number; sed: number; cont: number; age: number; dep: number; line: number[] }[] = [];
+const stat: { cls: number; dBin: number; dMax: number; sed: number; cont: number; age: number; dep: number; line: number[] }[] = [];
 let edges = 0;
 for (let f = 0; f < FACES; f++) for (let Y = 0; Y < fn; Y++) for (let X = 0; X < fn; X++) {
   const i = cellId(g, f, X, Y);
@@ -40,7 +40,7 @@ for (let f = 0; f < FACES; f++) for (let Y = 0; Y < fn; Y++) for (let X = 0; X <
   // the sea depth at 1..12 cells out along the land-to-sea direction, staying in the face and in the sea
   const line: number[] = [];
   let cf = f, cx = X, cy = Y, ok = true;
-  for (let t = 1; t <= 12; t++) {
+  for (let t = 1; t <= LINE; t++) {
     const st = step(g, cf, cx, cy, dir);
     if (!ok || st.face !== cf) { ok = false; line.push(-1); continue; }
     cx = st.X; cy = st.Y;
@@ -50,7 +50,7 @@ for (let f = 0; f < FACES; f++) for (let Y = 0; Y < fn; Y++) for (let X = 0; X <
   const dD = -h[s];
   rows.push([f, X, Y, h[i].toFixed(2), dD.toFixed(2), sd.toFixed(2), r.sediment[s].toFixed(1), cont(s).toFixed(1), r.basalt[s].toFixed(1), r.age[s].toFixed(1), r.plate[i], r.plate[s],
     bd.cls[i], bd.speed[i].toFixed(2), bd.cls[s], bd.speed[s].toFixed(2), r.acc[i], land(r.to[i]) ? 0 : 1, dep3.toFixed(1), line[9].toFixed(2), NAMES[margin]].join(","));
-  stat.push({ cls: margin, dBin: binOf(dD), sed: r.sediment[s], cont: cont(s), age: r.age[s], dep: dep3, line });
+  stat.push({ cls: margin, dBin: binOf(dD), dMax: dD, sed: r.sediment[s], cont: cont(s), age: r.age[s], dep: dep3, line });
 }
 writeFileSync(DIR + "coast.csv", rows.join("\n") + "\n");
 const q = (a: number[], p: number) => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
@@ -71,3 +71,16 @@ for (let c = 0; c < 3; c++) { const a = stat.filter((s) => s.cls === c); console
 const areas = cellAreas(g); let la = 0; for (let i = 0; i < N; i++) if (land(i)) la += areas[i];
 const R = g.radius / 1000, landKm2 = la * R * R, coastKm = (edges * meanCellM(g)) / 1000;
 console.log(`(f) coast edges ${edges}; coast length ${coastKm.toFixed(0)} km (edge * ${(meanCellM(g) / 1000).toFixed(3)} km); land ${landKm2.toFixed(0)} km2; coast per land area ${(coastKm / landKm2).toFixed(4)} km/km2`);
+// Summary for the variants table (scratch/variants.ts): cumulative shares by deepest-sea-neighbour depth, medians along the line, shelf widths.
+const THR = [1, 10, 30, 100, 300, 1000], WT = [50, 100, 200], MED = [1, 3, 6, 12];
+const widths = (a: typeof stat, thr: number) => { // cells out until the depth first exceeds thr; paths blocked first are dropped, paths still shallower after LINE cells count LINE + 1
+  const w: number[] = []; let open = 0, blocked = 0;
+  for (const s of a) { let v = -1; for (let t = 0; t < LINE; t++) { if (s.line[t] < 0) { v = -2; break; } if (s.line[t] > thr) { v = t + 1; break; } } if (v === -2) blocked++; else if (v < 0) { open++; w.push(LINE + 1); } else w.push(v); }
+  return { q: [0.25, 0.5, 0.75].map((p) => q(w, p)), n: w.length, open, blocked };
+};
+const sum: Record<string, unknown> = { coastCells: T, coastKm, landKm2, edges, cum: THR.map((t) => (100 * stat.filter((s) => s.dMax < t).length) / T) };
+for (let c = 0; c < 3; c++) {
+  const a = stat.filter((s) => s.cls === c);
+  sum[NAMES[c]] = { n: a.length, med: MED.map((t) => { const v = a.filter((s) => s.line.slice(0, t).every((x) => x >= 0)).map((s) => s.line[t - 1]); return [q(v, 0.5), v.length]; }), widths: WT.map((t) => widths(a, t)) };
+}
+writeFileSync(DIR + "coaststats.json", JSON.stringify(sum));

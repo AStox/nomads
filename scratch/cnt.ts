@@ -1,0 +1,2 @@
+import { readFileSync } from "node:fs";
+for (const k of process.argv.slice(2)) { const b = readFileSync(k); const a = new Int32Array(b.buffer, b.byteOffset, b.length / 4); let s = 0, mn = 1e9, mx = -1e9; const n = 1024; const cols = new Array(8).fill(0); for (let i = 0; i < a.length; i++) { if (a[i] <= 0) { s++; cols[Math.floor((i % n) / 128)]++; } mn = Math.min(mn, a[i]); mx = Math.max(mx, a[i]); } console.log(k, "sea", s, "min", mn, "max", mx, "sea by col octant", cols.join(",")); }
