@@ -1,6 +1,6 @@
-# Globe e2e tester issues (round 28 (published site 525a55e, arrivals))
+# Globe e2e tester issues (round 29 (candidate planet 6f5e2898ad43 on :8500))
 
-Round 28 on the published site, build 525a55e (arrivals: sooner and a smaller pop; site files 22:30 ET Oct 28): arrsettle.ts twice (12 places and zooms), arrival frames at A zoom 2 and 3 and B zoom 3, and 4 sessions (seeds 210 to 213). 20 issues: 8 fixed, 10 improved, 2 open. No crash, no console error except aborted tile requests.
+Round 29: CANDIDATE NEW PLANET key 6f5e2898ad43 on the TEST site :8500 (the published :8197 is untouched). 16 new places at zoom -2 to 5 (D, A, M re-shot at hour 19 so the sun is up there), 4 sessions (seeds 300 to 303 at 1280x800, 1920x1080, 800x1000, 1280x800), 12 edge and corner drags, 9 wheel-burst cases, 13 arrivals. Items 21 to 26 are about this planet only; items 1 to 20 are the renderer list of round 28 and are unchanged. Crash: none. Frame gaps: none over 45 ms in 4 sessions. Console errors: only aborted tile requests.
 
 ## 1. Dragging lurches the picture by up to a whole screen between two frames
 - Severity: visibly broken
@@ -181,3 +181,57 @@ Round 28 on the published site, build 525a55e (arrivals: sooner and a smaller po
 - Repro: settle2.ts 25 15 2 13 (screenshots every 200 ms after the jump)
 - Expected: 
 - Evidence: evid/arrival-A-z3-r25.jpg, evid/arrival-A3-r29.jpg, evid/arrival-A2-r29.jpg, evid/arrival-B3-r29.jpg
+
+## 21. [planet 6f5e] Coasts are drawn as sawtooth or stair steps
+- Severity: visibly broken
+- Seen: R mouth -10.48 90.29 zoom -1 and 1: the shore is a regular zig-zag of triangles (evid/np6f5e-M.jpg, third and fourth still). K3 -20.56 69.90 zoom -2: the sea edge of the land is a staircase of vertical columns (evid/np6f5e-C.jpg last still). Spit place 55.13 31.15 and shelf 53.84 27.26 at zoom -2: land plate with blocky edges against the sea (evid/np6f5e-K.jpg, np6f5e-S.jpg). The old planet's coasts were smooth curves.
+- Status: open, new on the candidate planet (:8500)
+- Matches fixlist: new planet generator (not the renderer)
+- Repro: look.ts with SITE=http://127.0.0.1:8500: -10.48,90.29 zoom -1;1; -20.56,69.90 zoom -2
+- Expected: 
+- Evidence: evid/np6f5e-M.jpg, evid/np6f5e-C.jpg, evid/np6f5e-K.jpg
+
+## 22. [planet 6f5e] Irregular cyan water patches lie over the land near coasts
+- Severity: visibly broken
+- Seen: R mouth -10.48 90.29 zoom 3, K3 -20.56 69.90 zoom 3, spit place 55.13 31.15 zoom 1 and 3, shelf 53.84 27.26 zoom 3: a mottled light-blue and brown mosaic where land meets the sea (evid/np6f5e-R.jpg first still, np6f5e-K.jpg second, np6f5e-S.jpg). The patches are pale cyan, flat, with blotchy edges like a threshold of a noise field; the old planet had none.
+- Status: open, new on the candidate planet (:8500)
+- Matches fixlist: new planet generator (not the renderer)
+- Repro: look.ts SITE=:8500 -10.48,90.29,3; -20.56,69.90,3; 53.84,27.26,3
+- Expected: 
+- Evidence: evid/np6f5e-R.jpg, evid/np6f5e-K.jpg, evid/np6f5e-S.jpg
+
+## 23. [planet 6f5e] Lakes are a flat bright-cyan disc inside a dark ring with a hard circular edge
+- Severity: noticeable
+- Seen: E2 17.35 N 45.00 E zoom 1, 3, 5 (evid/np6f5e-E2.jpg): a lake whose inner part is a flat pale blue disc and whose rim is a wide dark-blue band; the disc edge is a sharp circle. Valley lakes at zoom -1 (12.13 90.05) look ordinary, so it is the close view.
+- Status: open, new on the candidate planet (:8500)
+- Matches fixlist: new planet generator (not the renderer)
+- Repro: look.ts SITE=:8500 17.35,45,1;3;5
+- Expected: 
+- Evidence: evid/np6f5e-E2.jpg
+
+## 24. [planet 6f5e] A large flat featureless brown plain
+- Severity: noticeable
+- Seen: B -17.14 49.33 zoom 1 and 3 (evid/np6f5e-B.jpg): the whole screen is one grainy brown tone with a single tiny tree strip; no relief, no vegetation, no stream. Zoom -2 shows the same land is mostly bare.
+- Status: open, new on the candidate planet (:8500)
+- Matches fixlist: new planet generator (not the renderer)
+- Repro: look.ts SITE=:8500 -17.14,49.33,1;3
+- Expected: 
+- Evidence: evid/np6f5e-B.jpg
+
+## 25. [planet 6f5e] Evenly spaced parallel ridges are still on the planet
+- Severity: noticeable
+- Seen: Ridges 45.4 N 39.2 E zoom -1 and 1 (evid/np6f5e-V.jpg first and second stills): about 12 parallel north-south ridges spaced evenly across the screen, each with a forest strip (the washboard of issue 9). Home 46.43 N 45.76 E zoom -2 shows the same ripple on the slopes.
+- Status: open, new on the candidate planet (:8500)
+- Matches fixlist: new planet generator (not the renderer)
+- Repro: look.ts SITE=:8500 45.4,39.2,-1;1
+- Expected: 
+- Evidence: evid/np6f5e-V.jpg, evid/np6f5e-home.jpg
+
+## 26. [planet 6f5e] Place notes: the lake places 12.13 90.05 and 7.7 84.6 are open sea at zoom 2 and 4; D, A, M are dark at hour 13
+- Severity: polish
+- Seen: 12.13 N 90.05 E and 7.7 N 84.6 E at zoom 2 to 4 show only open sea (islands and a coast only at zoom -1; evid/np6f5e-W.jpg). D -10.26 -102.88, A -36.04 -103.82 and M -62.12 -89.88 are at local night at the usual hour=13 (sun 02:05), so I re-shot them at hour 19: D summit zoom 1 to 5 is a smooth sand-coloured ridge with soft shadows and a few patches of forest (evid/np6f5e-D.jpg), A is rolling forest with a thin straight-ish track at zoom 3 and trees at zoom 5 (evid/np6f5e-A.jpg), M orange dunes with long dark shadows (evid/np6f5e-M.jpg first stills).
+- Status: open, new on the candidate planet (:8500)
+- Matches fixlist: new planet generator (not the renderer)
+- Repro: look.ts SITE=:8500 12.13,90.05,2;4 7.7,84.6,2;4; Q=hour=19 for D, A, M
+- Expected: 
+- Evidence: evid/np6f5e-W.jpg, evid/np6f5e-D.jpg, evid/np6f5e-A.jpg
