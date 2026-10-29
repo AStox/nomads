@@ -184,17 +184,20 @@ export const tileCount = (g: Grid) => FACES * g.tiles * g.tiles;
 
 // ---------- 4. lookup ----------
 export interface Place { face: number; X: number; Y: number; tx: number; ty: number; i: number; j: number; fx: number; fy: number }
-// The cell holding a unit vector, with the fraction of the way across it in a and b (0 to 1; 1 only on a face's edge, where
+// The cell holding a unit vector (on the face it lies in, or `on` past its edge), with the fraction of the way across it in a and b (0 to 1; 1 only on a face's edge, where
 // the lower face number takes the point).
-export function locateVec(g: Grid, p: V3): Place {
+export function locateVec(g: Grid, p: V3, on?: number): Place {
   let face = 0, best = dot(p, FRAMES[0].n);
   for (let f = 1; f < FACES; f++) {
     const d = dot(p, FRAMES[f].n);
     if (d > best) { best = d; face = f; }
   }
+  // `on` names the face to read the place on when it lies across an edge from it (the caller lays a window there), its cells past the face's edge; the place must be no more than 78 degrees round from the face's middle
+  let across = false;
+  if (on !== undefined && on !== face && dot(p, FRAMES[on].n) > 0.2) { face = on; best = dot(p, FRAMES[on].n); across = true; }
   const { n, ex, ey } = FRAMES[face], w = dot(p, n);
   const sx = (Math.atan(dot(p, ex) / w) / (Math.PI / 2) + 0.5) * g.fn, sy = (Math.atan(dot(p, ey) / w) / (Math.PI / 2) + 0.5) * g.fn;
-  const X = Math.min(g.fn - 1, Math.max(0, Math.floor(sx))), Y = Math.min(g.fn - 1, Math.max(0, Math.floor(sy)));
+  const X = across ? Math.floor(sx) : Math.min(g.fn - 1, Math.max(0, Math.floor(sx))), Y = across ? Math.floor(sy) : Math.min(g.fn - 1, Math.max(0, Math.floor(sy)));
   return { face, X, Y, tx: X >> 8, ty: Y >> 8, i: X & 255, j: Y & 255, fx: sx - X, fy: sy - Y };
 }
 export const locate = (g: Grid, lat: number, lon: number) => locateVec(g, fromLatLon(lat, lon));

@@ -1269,7 +1269,7 @@ const WIN_NEAR = 600, WIN_EDGE = 1200, WIN_KEEP = 3, winCache = [];
 const arcOf = (a, b) => planet.radiusM * Math.acos(Math.min(1, Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.cos((a.lon - b.lon) * Math.PI / 180) + Math.sin(a.lat * Math.PI / 180) * Math.sin(b.lat * Math.PI / 180)));
 const winNear = (want) => {
   // the window an ask lands in is the page-snapped one nearest it (windowAt): found by its id, so a camera 3 km off the snapped centre is not "far" from the window it was just given
-  if (want.mode === "win") { const id = planet.wins.windowAt(want.lat, want.lon).id, w = winCache.find((x) => !x.dead && x.id === id); if (w) return w; }
+  if (want.mode === "win") { const id = planet.wins.windowAt(want.lat, want.lon, want.face).id, w = winCache.find((x) => !x.dead && x.id === id); if (w) return w; }
   let best = null, bestD = Infinity;
   for (const w of winCache) {
     if (w.dead) continue;
@@ -1318,7 +1318,7 @@ async function groundWant(m) {
       if (w && !spec && (w === curWin || w === prepared?.win)) { if (w === curWin) refocus(w, want); continue; }
       const fresh = !w;
       if (!w) {
-        w = await planet.wins.build(want.lat, want.lon);
+        w = await planet.wins.build(want.lat, want.lon, want.face);
         tr("built", w.id, spec ? 1 : 0);
         keepWindow(w);
         console.info("[win]", w.id, "pages made", w.stats.made, "ms", JSON.stringify(Object.fromEntries(Object.entries(w.stats.ms).map(([k, v]) => [k, Math.round(v)]))), "t", Math.round(performance.now()));

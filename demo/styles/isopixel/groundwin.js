@@ -335,8 +335,9 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
   }
 
   // The window (its id, face and corner) that build lays at (lat, lon): the page-snapped one whose centre is nearest the cell holding it
-  function windowAt(lat, lon) {
-    const loc = G.locateVec(g, G.fromLatLon(lat * D2R, lon * D2R)), face = loc.face, x0 = Math.round((loc.X - N / 2) / PAGE) * PAGE, y0 = Math.round((loc.Y - N / 2) / PAGE) * PAGE;
+  // `on`: the face to lay it on (the page's, where its lattice stands: live.js latFaceAt) if the place is on that face's side of the sphere, which a place across a cube's edge is; the window then lies across the edge
+  function windowAt(lat, lon, on) {
+    const loc = G.locateVec(g, G.fromLatLon(lat * D2R, lon * D2R), on), face = loc.face, x0 = Math.round((loc.X - N / 2) / PAGE) * PAGE, y0 = Math.round((loc.Y - N / 2) / PAGE) * PAGE;
     return { id: `${face}:${x0}:${y0}`, face, x0, y0 };
   }
   // the ground tiles of the window a place falls in, asked for ahead of the window (a failure is the window's to meet when it is made)
@@ -346,9 +347,9 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       for (let tx = Math.max(0, Math.floor(x0 / 256)); tx <= Math.min(nT - 1, Math.floor((x0 + N - 1) / 256)); tx++) groundTile(face, tx, ty).catch(() => {});
   }
   // The window of 4 by 4 pages whose centre is nearest the cell holding (lat, lon) degrees (its corner a multiple of a page). Returns what the renderer, the page and the object buffer take.
-  async function build(lat, lon) {
+  async function build(lat, lon, on) {
     await warming;
-    const t0 = performance.now(), { face, x0, y0 } = windowAt(lat, lon), pause = sliced();
+    const t0 = performance.now(), { face, x0, y0 } = windowAt(lat, lon, on), pause = sliced();
     const { tl, own, at, srcF, srcX, srcY, turn, planes, src, t1 } = await gather(face, x0, y0);
     tr("gathered");
     const wp = { face, x0, y0, src };

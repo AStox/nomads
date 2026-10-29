@@ -134,6 +134,19 @@ test("lat lon to cell to lat lon round trip is exact for cells and 1e-14 for poi
   }
 });
 
+test("locateVec reads a place across a cube's edge on the face asked for, its cells past the face's edge", () => {
+  const g = makeGrid(6);
+  // 0.2 radians north of the edge between faces 0 (x) and 4 (z) at longitude 0: the place is in face 4, and read on face 0 it lies past that face's top edge
+  const p: V3 = [Math.cos(Math.PI / 4 + 0.2), 0, Math.sin(Math.PI / 4 + 0.2)];
+  expect(locateVec(g, p).face).toBe(4);
+  const on = locateVec(g, p, 0);
+  expect(on.face).toBe(0);
+  expect(on.Y).toBeGreaterThanOrEqual(g.fn);
+  expect(locateVec(g, p, 4).face).toBe(4);
+  // a face more than 78 degrees round from the place is not taken
+  expect(locateVec(g, p, 2).face).toBe(4);
+});
+
 test("a tier's cells nest in the tier above's: four children to a cell, vertices shared", () => {
   const g0 = tierGrid(0), g1 = tierGrid(1), rnd = stream(11);
   for (let k = 0; k < 3000; k++) {

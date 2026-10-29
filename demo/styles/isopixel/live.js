@@ -363,7 +363,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     let want = null;
     // with no game on it the play area is the planet's ground like any other (a window), never the island stamp
     if (simOpts && arc(HOME.c) < mC + 800) { if (mode !== "home") want = { mode: "home" }; }
-    else if (mode !== "win" || arc(FRM.c) / FRM.scale > mC - 0.5 * ext - 800) want = { mode: "win", lat: view.geo.lat, lon: view.geo.lon, half, ext };
+    else if (mode !== "win" || arc(FRM.c) / FRM.scale > mC - 0.5 * ext - 800) want = { mode: "win", lat: view.geo.lat, lon: view.geo.lon, face: latFaceAt(view.geo), half, ext };
     // a speculative ask is for the view a zoom is heading to: the worker makes the window ahead of the view that needs it, and keeps it
     if (speculative) {
       if (!want || want.mode !== "win") return;
@@ -428,10 +428,19 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // a target that jumps (a teleport, a bookmark, a search) is a new picture, not a camera moving on: the lattice of the place it left would glide into the new one's for ten time constants, and the sea's waves, which
   // stand in it, slide the whole time [design: a quarter radian, 98 km on a 391 km planet and well past what a frame of a drag or a fly covers]
   const LAT_JUMP = 0.25;
-  let latS = null, latFrom = null;
-  function latTick(view) {
+  let latS = null, latFrom = null, latHome = null;
+  // the face the camera's lattice stands on where the target is (within a window's reach of where it was last stepped): a window made there is laid on it, so the lattice and the window's frame are one and the picture
+  // does not turn when the window's cover brings the exact lattice in (at a cube edge the target's own face is a coin's toss from frame to frame)
+  const latFaceAt = (geo) => (latHome && Math.acos(Math.min(1, dotv(vecOf(geo), latHome.c))) * PR < SIZE ? latHome.face : undefined);
+  // `still`: the ground the hold keeps is not moving on the screen (a wheel zoom's anchor under a cursor that stands still). The target moves for the zoom's own re-centring about an off-centre cursor and for the lift
+  // the new place gives it (7 km at B, where the lift fell from 1235 m to 546 m), not because the picture scrolled, so within a window's reach (SIZE) of where the lattice was last stepped by a pan that travel steps
+  // nothing. Where the exact lattice jumps (the target crossing a cube edge: 119 degrees at B, a corner's) the lattice that followed it turned the picture by the jump about the held ground in 100 ms, and the relief nearer
+  // the camera hid the ground that had been under the cursor; farther than the reach the zoom is travel, as a flight from orbit is, and the lattice follows it
+  function latTick(view, still) {
     if (!PLACE || !view.geo) return false;
-    const T = latticeAt(view.geo), v = vecOf(view.geo), jumped = latFrom && Math.acos(Math.min(1, dotv(v, latFrom))) > LAT_JUMP, px = latS && latFrom ? travelPx(view, latFrom) : 0;
+    const T = latticeAt(view.geo), v = vecOf(view.geo), jumped = latFrom && Math.acos(Math.min(1, dotv(v, latFrom))) > LAT_JUMP;
+    const held = !!still && !!latHome && Math.acos(Math.min(1, dotv(v, latHome.c))) * PR < SIZE, px = latS && latFrom && !held ? travelPx(view, latFrom) : 0;
+    if (!held) latHome = { c: v, face: latFace };
     latFrom = v;
     if (!latS || !T.q || jumped) { latS = { sc: T.sc, turn: T.turn, q: T.q && [...T.q] }; return true; }
     // where the exact lattice is drawn whole (a window's cover of 1) the eased one is not seen: it is the exact one, so a window lost later gives the picture back as it stands
@@ -454,7 +463,19 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // the lattice moves once a frame; a camera that holds ground by it moves it once the hold has moved the target (the step is the travel of that frame, so a camera that stops does not step again) and solves the hold
   // again for it, so the hold is solved for the picture drawn, and the frame then takes it as it is. True if the lattice moved.
   let latPre = false;
-  function tickLattice(view) { reframed(view); const moved = latTick(view), lifted = liftTick(view); headMove.seen(view); latPre = true; return moved || lifted; }
+  // The lattice the frame is drawn with changes as a window's cover grows even when the camera's own has not stepped (latOf blends it toward the exact one by the cover), and a hold that was solved for the last frame's
+  // would let the ground it keeps slide by the turn: it is told so, as for a step of the lattice or the lift. Only the cover's share counts (the cover's step times what is left to blend): the exact lattice's own change
+  // with the target is the camera's step (latTick), and where the camera's lattice is the exact one nothing is left to blend, so a hold there is told nothing and is solved as it was
+  let latCover = null;
+  function coverMoved(view) {
+    if (!PLACE || !view.geo || !latS) return false;
+    const c = LAT_COVER(view), P = latCover;
+    latCover = c;
+    if (P === null || c === P) return false;
+    const T = latticeAt(view.geo), S = latS;
+    return !!T.q && Math.abs(c - P) * (Math.abs(wrapPi(T.turn - S.turn)) + Math.abs(T.sc - S.sc) + T.q.reduce((m, x, i) => m + Math.abs(x - S.q[i]), 0)) * canvas.width * smooth(ZLAD - 1.5, ZLAD, view.zoom) > SEEN_PX;
+  }
+  function tickLattice(view, still) { reframed(view); const moved = latTick(view, still), lifted = liftTick(view), covered = coverMoved(view); headMove.seen(view); latPre = true; return moved || lifted || covered; }
   // the target as the hold solved it again for those steps is where the camera stands: the small move that made is not travel to step the lattice, the lift and the roll by, or a camera that stops would step once more
   function camSeen(view) { if (view.geo) latFrom = vecOf(view.geo); headMove.seen(view); liftMove.seen(view); }
   // North up cannot always be held by a drag. At a pole north turns by half a turn as the target crosses it, and near the planet's edge a place cannot be shown where the cursor is with north up
