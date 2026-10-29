@@ -391,11 +391,20 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   }
   const planetSky = (k) => ({ sun: bodyOver(skyVec(k.sun), FRM), moon: { ...bodyOver(skyVec(k.moon), FRM), phase: k.moon.phase, lit: k.moon.lit }, id: gid });
   // The sky over the camera's target whichever ground the ladder stands on, so the light tables and the ambient the planet pass is drawn through are the target's at every zoom
-  // (the frame's axes are the plane's, turned off the target's up to stand tangent there): the sun and moon are one point of the sky each, seen from the target's own horizon.
+  // (the frame's axes are the plane's, turned off the target's up to stand tangent there): the sun and moon are one point of the sky each, seen from the target's own horizon. The plane is the
+  // cells' lattice at the target, turned from true north by `turn` as the camera draws it (latOf, the one planetParams turns the picture by), so a far jump is lit by the place it lands on from its first
+  // picture, not by the frame of the window it left until the new one's ground is taken in.
   // Its id changes with the sun's and moon's elevation in steps of an eighth of a degree, which is when the tables are made again.
-  function planetSkyAt(k, geo) {
+  function planetSkyAt(k, geo, turn) {
     const c = vecOf(geo), tangent = (a) => { const d = dotv(a, c), r = [a[0] - c[0] * d, a[1] - c[1] * d, a[2] - c[2] * d], l = Math.hypot(r[0], r[1], r[2]) || 1; return [r[0] / l, r[1] / l, r[2] / l]; };
-    const F = { c, e: tangent(FRM.e), n: tangent(FRM.n) }, sun = bodyOver(skyVec(k.sun), F), moon = bodyOver(skyVec(k.moon), F);
+    let fe = tangent(FRM.e), fn = tangent(FRM.n);
+    // the game's island stands in its own plane (HOME), true east and south, wherever the target is within it
+    if (GL && !(mode === "home" && Math.acos(Math.min(1, dotv(c, FRM.c))) * PR < SIZE)) {
+      const [E, Nn] = GL.eastNorth(c), cs = Math.cos(turn), sn = Math.sin(turn);
+      fe = [0, 1, 2].map((i) => E[i] * cs - Nn[i] * sn);
+      fn = [0, 1, 2].map((i) => E[i] * sn + Nn[i] * cs);
+    }
+    const F = { c, e: fe, n: fn }, sun = bodyOver(skyVec(k.sun), F), moon = bodyOver(skyVec(k.moon), F);
     return { sun, moon: { ...moon, phase: k.moon.phase, lit: k.moon.lit }, id: `${gid}|${Math.round(sun.el * 8 / D2R)}|${Math.round(moon.el * 8 / D2R)}` };
   }
   // The cells under a place as the planet's grid lays them, in the frame a window of them there would have (east along the cells' X axis, north across it): `sc` true metres a frame metre, `turn` the
@@ -1383,7 +1392,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the fields are made as the message comes, a held one (the worker is still making the window's objects) is taken in when the worker says go
     if (pendingGround) { pendingGround.f ??= fieldsSlice(pendingGround); if (pendingGround.f && !pendingGround.hold) { applyGroundMsg(pendingGround, view, pendingGround.f); pendingGround = null; } }
     homeSky = skyFor(clock, now);
-    sky = PLACE && view.geo ? skyFor(clock, now, planetSkyAt(homeSky, view.geo)) : homeSky;
+    sky = PLACE && view.geo ? skyFor(clock, now, planetSkyAt(homeSky, view.geo, latOf(view).turn)) : homeSky;
     syncGeo(view);
     wantGround(view, now);
     panAhead(view, now);
