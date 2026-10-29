@@ -1338,10 +1338,13 @@ async function groundWant(m) {
         tr("posted", w.id);
         post({ type: "ground", gid: prepared.gid, mode: "win", hold: true, frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon, face: w.face, x0: w.x0, y0: w.y0 }, fields: w.fields, stats: { ...w.stats, id: w.id } });
         const mine = prepared;
-        if (near) await near;
-        w.prep = await prep;
-        tr("go", w.id);
-        post({ type: "groundGo", gid: mine.gid, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null });
+        try {
+          if (near) await near;
+          w.prep = await prep;
+        } finally {
+          tr("go", w.id);
+          post({ type: "groundGo", gid: mine.gid, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null });
+        }
       }
     }
   } catch (err) {

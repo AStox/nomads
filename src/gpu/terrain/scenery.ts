@@ -107,8 +107,9 @@ export function run(g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][],
 }
 
 // The workgroups of a slice of the whole-tile kernels (the stream raster, count and write: 16,384 workgroups each, 45 to 115 ms of the GPU in one submit, every frame and the browser's own drawing held behind
-// it). [design: 256, a sixty-fourth of each: 1 to 2 ms of the GPU on average on the dev machine, a few more where the streams or the forest are dense, against a 60 Hz frame's 16.7]
-export const SLICE_GROUPS = 256;
+// it). [design: 1,024, a sixteenth of each: 3 to 7 ms of the GPU on the dev machine, and a frame waits behind at most two slices (kernel.ts IN_FLIGHT), under a 60 Hz frame's 16.7. A sixty-fourth
+// (256) cost a submit's own overhead, about 0.6 ms, on each slice of 1 to 2 ms: a tile's count and write took 1.5 to 2 times the GPU's time for them]
+export const SLICE_GROUPS = 1024;
 // `groups` workgroups of an entry point whose threads add the word I_SLICE of `idx` (wgsl/terrain-scenery.ts) to their global invocation id, made as slices of SLICE_GROUPS
 const runSliced = (g: Gpu, p: GPUComputePipeline, binds: [number, GPUBuffer][], idx: GPUBuffer, L: SceneryLayout, size: number, groups: number) =>
   dispatchSliced(g, p, binds, groups, SLICE_GROUPS, (first) => g.device.queue.writeBuffer(idx, (L.IDX.pad + 1) * 4, Uint32Array.of(first * size)));

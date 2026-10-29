@@ -23,7 +23,7 @@ const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^-
 const SITE = process.env.SITE ?? "http://127.0.0.1:8470/base";
 const PROFILE = process.env.PROFILE ?? join(homedir(), ".cache/nomads-scratch/lead3/arrive2-chrome");
 // the e2e tester's places (arrsettle.ts): name -> lat, lon, hour
-const ALL: Record<string, [number, number, number]> = { A: [4.35, -39.38, 13], B: [-35.9, 43.59, 13], R: [12.02, 83.89, 13], M: [-26.17, -36.17, 13], E2: [13.27, 45.0, 13], H: [47.78, 38.63, 13], S1: [25, 15, 13], S2: [15.02, -71.76, 20.5] };
+const ALL: Record<string, [number, number, number]> = { A: [4.35, -39.38, 13], B: [-35.9, 43.59, 13], R: [12.02, 83.89, 13], R2: [8.32, 88.3, 13], M: [-26.17, -36.17, 13], E2: [13.27, 45.0, 13], H: [47.78, 38.63, 13], S1: [25, 15, 13], S2: [15.02, -71.76, 20.5] };
 const SEQ = "S1:2,S1:3,S2:2,S2:4,A:2,A:3,A:4,B:3,H:3,R:4,E2:2,M:3";
 // the cases: --seq=A:2,A:3 (in that order, in one page: what an earlier case left resident and drawn stays), or --places x --zooms; --reload loads the page anew for each (nothing resident), --cold with it clears the browser's tile file store too
 const cases: [string, number][] = args.seq ? (args.seq === "tester" ? SEQ : args.seq).split(",").map((c) => [c.split(":")[0], Number(c.split(":")[1])] as [string, number]) : (args.places ?? "A,B,R").split(",").flatMap((n) => (args.zooms ?? "2,3,4").split(",").map((z) => [n, Number(z)] as [string, number]));
@@ -165,6 +165,7 @@ try {
       const msgAt = (ty: string) => { const m = A.msgs.find((x: any[]) => x[1] === ty && x[0] >= t0); return m ? Math.round(m[0] - t0) : null; };
       const row = {
         sentLift: A.sent.filter((d: any[]) => d[0] >= t0).filter((_: unknown, i: number) => i % 6 === 0).slice(0, 24).map((d: any[]) => [Math.round(d[0] - t0), ...(d[2] ?? []).map((v: number | null) => (v === null ? null : Math.round(v * 100) / 100))]),
+        fineT: draws.filter((e, i) => i === 0 || e[4] !== draws[i - 1][4] || Math.abs(e[3] - draws[i - 1][3]) > 0.2).slice(0, 40).map((e) => [Math.round(e[0]), e[2], e[3], e[4]]),
         events: ev.filter((e) => !["draw", "tile", "ask"].includes(e[1])).map((e) => [Math.round(e[0]), ...e.slice(1)]),
         prof, poll,
         raf: A.raf.filter((t: number) => t >= t0 && t < t0 + 2000).map((t: number) => Math.round(t - t0)),
