@@ -131,13 +131,23 @@ function children2(parent: ArrayLike<number>, from: number, out: Float64Array, a
     }
   }
 }
-// The carry's limiter: the four children `w` of a cell (whole 1/256 m units, the bilinear children carried and rounded) are held between the least and the greatest of the cell's own 3 x 3
-// neighbourhood at the tier above (`lo`, `hi`: floor and ceiling, so a parent that is not a whole unit still fits), then the parent's mean is restored, `sum4` being the children's total
-// (4 times the parent, rounded): the miss is spread over the children that can still move, a share each, the first to the remainder, again until it is spent or every child is at a bound.
-// A mean-preserving carry of a step rings (a spit of +130 m on the high side of a 750 m cliff, a sea strip beside it): the bound is the local-extremum bound of a limited reconstruction
-// (Barth and Jespersen 1989, AIAA 89-0366; Harten, Engquist, Osher and Chakravarthy 1987, ENO), whose result is never outside what the parent saw round it. Integers only.
-export function limitChildren(w: number[], sum4: number, lo: number, hi: number) {
-  const L = Math.floor(lo), H = Math.ceil(hi), free = [false, false, false, false];
+// The carry's one limiter: the four children `w` of a cell (whole 1/256 m units, the bilinear children carried and rounded) with the parent's total `sum4` (4 times the parent). A mean-preserving carry of
+// a step rings (a trench of sea under land parents beside a 750 m cliff: the sea strips and ponds of the tier-3 pictures), and nothing but the sea level says such a child is wrong. So where all nine
+// parents of the 3 x 3 are land (`lo` > 0, the least of them) and a child is not, or all are sea (`hi`, the greatest, at most 0) and a child is land, the children are scaled toward their mean, w' = mean +
+// theta (w - mean), by the largest theta that keeps them one unit on their parents' side of the sea level (Zhang and Shu 2010, J. Comput. Phys. 229: 3091, the scaling of a reconstruction toward the cell
+// mean to keep it inside a bound; Zhang and Shu 2011, Proc. R. Soc. A 467: 2752, the same for positivity), and the mean is restored among the children that can still move; everywhere else the carry is free
+// (a coast moves inside the cells that hold it, a strict peak keeps a sub-cell crest). A box on the parents' range (Barth and Jespersen 1989) was tried first: at a strict extremum of the 3 x 3 the box is the
+// parent's own value, so all four children are equal, and a constant block carried down is a constant 4 x 4, 8 x 8 (a flat square of the tier-0 cell's footprint at every peak and pit), and a plain next
+// to a cliff stayed on the tier-0 cell's edge. Integers in, integers out.
+export function limitSea(w: number[], sum4: number, lo: number, hi: number) {
+  const land = lo > 0 && sum4 >= 4, sea = !land && hi <= 0 && sum4 <= -4, mean = sum4 / 4;
+  let L = -Infinity, H = Infinity;
+  if (land || sea) {
+    const m = Math.min(w[0], w[1], w[2], w[3]), M = Math.max(w[0], w[1], w[2], w[3]);
+    if (land) { L = 1; if (m < 1) { const theta = (mean - 1) / (mean - m); for (let k = 0; k < 4; k++) w[k] = Math.round(mean + theta * (w[k] - mean)); } }
+    else { H = -1; if (M > -1) { const theta = (-1 - mean) / (M - mean); for (let k = 0; k < 4; k++) w[k] = Math.round(mean + theta * (w[k] - mean)); } }
+  }
+  const free = [false, false, false, false];
   let sum = 0;
   for (let k = 0; k < 4; k++) { w[k] = Math.min(H, Math.max(L, w[k])); sum += w[k]; }
   for (let d = sum4 - sum; d !== 0; ) {
@@ -153,7 +163,7 @@ export function limitChildren(w: number[], sum4: number, lo: number, hi: number)
 // A field at tier `from` (1/256 m) carried to the next tier: the bilinear children, then what is left of each parent's height (its height less the children's mean) is carried
 // down the same way, `passes` times, so that the children's means come to the parents' without a constant to a block (a constant is a step of up to 100 m at the block's
 // edge on a range: measured); the last whole-unit constant, which is then under a unit, makes the children of every cell sum to 4 times its height exactly [design, R1761]. With
-// passes the children are limited (limitChildren: inside the range of the parent's 3 x 3 neighbourhood, the mean kept where that range allows); `passes` = 0 is the plain remap.
+// passes the children are limited (limitSea: where all nine parents of the 3 x 3 are land or all sea, the children stay on that side of the sea level, the mean kept); `passes` = 0 is the plain remap.
 export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4): Int32Array {
   const n = CELLS0 << (2 * from), c = new Float64Array(4 * n), out = new Int32Array(4 * n), fnp = 256 << from, fn = fnp * 2, cells = fnp * fnp;
   if (parent.length !== n) throw new Error(`refineSmooth: tier ${from} holds ${n} cells, got ${parent.length}`);
@@ -181,7 +191,7 @@ export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4
             around3(gp, f, X, Y, ids);
             for (let k = 0; k < 9; k++) if (ids[k] >= 0) { const u = parent[ids[k]]; if (u < lo) lo = u; if (u > hi) hi = u; }
           }
-          limitChildren(v, Math.round(parent[p] * 4), lo, hi);
+          limitSea(v, Math.round(parent[p] * 4), lo, hi);
           out[o] = v[0]; out[o + 1] = v[1]; out[o + fn] = v[2]; out[o + fn + 1] = v[3];
           continue;
         }

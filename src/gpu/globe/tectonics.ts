@@ -1016,6 +1016,22 @@ export function derive(set: Setup, tab: Tables, S: Int32Array): Derived {
       }
   return d;
 }
+// The surface height of derive's isostasy with no whole-metre cut: `Twin.elevOf` truncates to a metre (and thickness to a metre), which turns every column within a metre of the sea
+// into exactly 0 (a flat plain that the ice's sea level then makes land) and stacks the coastal plain's gradient (a metre or two a cell) into terraces. The same formula in floats.
+export function fineHeight(set: Setup, tab: Tables, S: Int32Array): Float32Array {
+  const g = set.grid, N = FACES * g.fn * g.fn, fw = fieldWords(g), out = new Float32Array(N), R = PHYS.RHO.map((r) => PHYS.RHO_M - r), phi0 = PHYS.H0 * (PHYS.RHO_M - 2800);
+  for (let f = 0; f < FACES; f++)
+    for (let Y = 0; Y < g.fn; Y++)
+      for (let X = 0; X < g.fn; X++) {
+        const at = wordAt(g, f, X, Y), a = tab.words[slotOf(g, f, X, Y) * TILE_WORDS + inTile(X, Y)];
+        let phi = 0, hb = 0;
+        for (let k = 0; k < 5; k++) { const t = ((S[(FLD.VB + k) * fw + at] >>> 0) * 16) / a; phi += t * R[k]; if (k === 0) hb = t; }
+        const vb = S[FLD.VB * fw + at] >>> 0, nb = vb >>> PHYS.AGE_SHIFT, age = nb > 0 ? Math.min(Math.floor((S[FLD.AGB * fw + at] >>> 0) / nb), PHYS.AGE_MAX) : 0;
+        const d = phi + (set.Q[set.layout.phith + age] * Math.min(hb, PHYS.H_OC)) / PHYS.H_OC - phi0;
+        out[cellId(g, f, X, Y)] = d / (d < 0 ? PHYS.RHO_M - PHYS.RHO_W : PHYS.RHO_M) - set.params.seaLevel;
+      }
+  return out;
+}
 
 // ---------- 10. measures ----------
 // The share of the planet's area that is land, by true cell area.
