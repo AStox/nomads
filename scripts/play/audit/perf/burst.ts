@@ -1,9 +1,9 @@
 // A wheel burst at a held cursor right after a drag is released (the e2e tester's burstinertia.ts with a per-frame record): the ground picked under the cursor when the burst starts, where it is drawn each frame against the
-// cursor, with the zoom, the window's mode and cover and the target. DELAY (ms after the release, default 0), TICKS, GAP (ms between ticks), DIR (1 out, -1 in), ONLY=A,B,E2, REPS (each case that many times: a window arriving during the zoom makes it a race), TRACE=1 prints the frames.
+// cursor (STEPX px a step, MOVEMS ms between steps: 40 and 12 is the fast drag; 5 and 70 the e2e tester's slow one), with the zoom, the window's mode and cover and the target. DELAY (ms after the release, default 0), TICKS, GAP (ms between ticks), DIR (1 out, -1 in), ONLY=A,B,E2, REPS (each case that many times: a window arriving during the zoom makes it a race), TRACE=1 prints the frames.
 //   lockf /tmp/nomads-gpu.lock bun scripts/play/audit/perf/burst.ts      SITE, PROFILE, QUERY (added to the page's query)
 import { launch, sleep, load } from "./lib";
 const CASES: [string, number, number, number, number][] = [["A", 4.35, -39.38, 0.5, -1], ["E2", 13.27, 45, -1, -1], ["B", -35.9, 43.59, 1.8, 1]];
-const only = (process.env.ONLY ?? "").split(",").filter(Boolean), DELAY = Number(process.env.DELAY ?? 0), TICKS = Number(process.env.TICKS ?? 6), GAP = Number(process.env.GAP ?? 60), TRACE = !!process.env.TRACE, REPS = Number(process.env.REPS ?? 1), SX = Number(process.env.STEPX ?? 40), SY = SX / 4;
+const only = (process.env.ONLY ?? "").split(",").filter(Boolean), DELAY = Number(process.env.DELAY ?? 0), TICKS = Number(process.env.TICKS ?? 6), GAP = Number(process.env.GAP ?? 60), TRACE = !!process.env.TRACE, REPS = Number(process.env.REPS ?? 1), SX = Number(process.env.STEPX ?? 40), SY = SX / 4, MOVE_MS = Number(process.env.MOVEMS ?? 12);
 const r = await launch({ profile: process.env.PROFILE, vw: 1280, vh: 800 });
 let bad = 0;
 try {
@@ -26,7 +26,7 @@ try {
     await r.page.evaluate((a: number, b: number, zz: number) => { const P = (window as any).play; P.view.bearing = 0; P.view.geo = { lat: a, lon: b }; P.camera.setZoom(zz); }, lat, lon, z);
     await idle();
     await r.page.mouse.move(500, 400); await r.page.mouse.down();
-    for (let i = 0; i < 8; i++) { await r.page.mouse.move(500 + (i + 1) * SX, 400 + (i + 1) * SY); await sleep(12); }
+    for (let i = 0; i < 8; i++) { await r.page.mouse.move(500 + (i + 1) * SX, 400 + (i + 1) * SY); await sleep(MOVE_MS); }
     await r.page.mouse.up();
     await sleep(DELAY);
     const cx = 500 + 8 * SX, cy = 400 + 8 * SY;
@@ -35,7 +35,7 @@ try {
     if (process.env.PICK) await r.page.evaluate(() => { const w = window as any, L = w.play.live; w.__gu = []; if (!L.__o) { L.__o = L.groundUnder; L.groundUnder = (v: any, sx: number, sy: number) => { const a = L.__o(v, sx, sy), G = L.stats.ground; w.__gu.push({ t: Math.round(performance.now() - w.__rec?.t0), sx, sy, y: a?.y, lat: a?.geo?.lat, G: G && { at: G.at, y: G.y, sig: G.sig }, hd: v.geo.hd }); return a; }; } });
     if (process.env.EVLOG) await r.page.evaluate(() => {
       const w = window as any, P = w.play, L = P.live; w.__ev = [];
-      const snap = (tag: string, ret?: any) => { const v = P.view, la = L.debug.lattice(v), A = w.__rec?.A, s = A && L.screenOf(v, A.x, A.z, A.y, A.geo); w.__ev.push([Math.round(performance.now() - (w.__rec?.t0 ?? 0)), tag, ret, +v.geo.lat.toFixed(4), +v.geo.lon.toFixed(4), +la.turn.toFixed(4), +la.cover.toFixed(2), +(la.sc ?? 0).toFixed(4), s && s.map((q: number) => +q.toFixed(1)), L.stats.lift && +L.stats.lift.toFixed(0), P.camera.holding ? 1 : 0]); };
+      const snap = (tag: string, ret?: any) => { const v = P.view, la = L.debug.lattice(v), A = w.__rec?.A, s = A && L.screenOf(v, A.x, A.z, A.y, A.geo); w.__ev.push([Math.round(performance.now() - (w.__rec?.t0 ?? 0)), tag, ret, +v.geo.lat.toFixed(4), +v.geo.lon.toFixed(4), +la.turn.toFixed(4), +la.cover.toFixed(2), +(la.sc ?? 0).toFixed(4), s && s.map((q: number) => +q.toFixed(1)), L.stats.lift && +L.stats.lift.toFixed(0), P.camera.holding ? 1 : 0, JSON.stringify(Object.fromEntries(Object.entries(L.debug.liftState(v)).map(([k, x]) => [k, typeof x === "number" ? +x.toFixed(2) : x])))]); };
       for (const k of ["tickLattice", "camSeen"]) { const o = L[k]; L[k] = (...a: any[]) => { snap(k + "<"); const r = o(...a); snap(k + ">", r); return r; }; }
       const og = L.solveTarget; L.solveTarget = (...a: any[]) => { const r = og(...a); snap("solve"); return r; };
     });

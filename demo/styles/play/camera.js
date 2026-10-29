@@ -136,7 +136,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
         // the zoom is over, the held ground is not: the cells' lattice, a window, the planet's tiles and the ladder's chunks go on changing the picture about the target, so the cursor keeps its ground until they stop
         if (anchor) { anchor.rest ??= now; if (now - anchor.rest > REST_MS || (!live.moving(view) && performance.now() - (anchor.changed ?? 0) > QUIET_MS)) anchor = null; }
         if (!anchor) tried = null;
-        live.setProbe(anchor?.A.geo);
+        live.setProbe(anchor?.A.geo, anchor?.A.y);
         return;
       }
       let z = view.zoom + (goal - view.zoom) * (1 - Math.exp(-dt / ZOOM_TAU));
@@ -144,7 +144,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
       if (anchor && !hold(anchor.A, ...anchor.at, { ...view, zoom: z })) anchor = null;
       view.zoom = zoomSet = z;
       if (z === goal && !anchor) tried = null;
-      live.setProbe(anchor?.A.geo);
+      live.setProbe(anchor?.A.geo, anchor?.A.y);
     },
     // No NaN or Infinity survives a frame: the last good state comes back. Then everything is clamped to the island.
     guard() {

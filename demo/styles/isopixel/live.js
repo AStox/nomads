@@ -508,9 +508,13 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const c = LAT_COVER(view), S = latS;
     return { sc: S.sc + (T.sc - S.sc) * c, turn: S.turn + (((T.turn - S.turn + 3 * Math.PI) % TAU) - Math.PI) * c, q: S.q.map((v, i) => v + (T.q[i] - v) * c) };
   }
-  // whether the picture still changes of itself with the camera standing still: a window on its way or fading in, the planet's tiles arriving
-  function moving() {
-    return quietDone < 3 || winFade() < 1 || !!(asked && asked.t > groundAt);
+  // whether the picture still changes of itself with the camera standing still: a window on its way or fading in, the planet's tiles arriving, the cells' lattice not the exact one where a window's cover is still to
+  // bring it in (it stays where the camera left it until the cover does: a window that arrives after the hold has gone moves the picture by the difference, the camera's REST_MS being the bound)
+  function moving(view) {
+    if (quietDone < 3 || winFade() < 1 || (asked && asked.t > groundAt)) return true;
+    if (!PLACE || !view?.geo || !latS || LAT_COVER(view) >= 1) return false;
+    const T = latticeAt(view.geo), S = latS;
+    return !!T.q && (Math.abs(((T.turn - S.turn + 3 * Math.PI) % TAU) - Math.PI) > 5e-5 || Math.abs(T.sc / S.sc - 1) > 5e-5 || T.q.some((v, i) => Math.abs(v - S.q[i]) > 5e-5));
   }
   // the planet camera's look at a zoom: u runs from the whole planet (0) to the ladder's first zoom (1)
   function planetParams(view) {
@@ -564,21 +568,13 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     return { ...I, pyr: L.pyr + through + (I.pyr - liftCarry - L.pyr) * (1 - Math.exp(-px / LIFT_PX)) };
   }
   // once a frame, with the lattice's step, for the travel the camera has made in it (a held camera moves it after the hold, solves again for it; see tickLattice); true if the lift the frame is drawn at moved enough to
-  // show. A window's cover that collapses at once (a swap to a window that does not yet cover the view: the cover is the share of the lift that is the window's camera height, which stands kilometres off the pyr on a
-  // mountain) must not move the picture, which nothing asked for: the latch takes the value that keeps the lift where it was, and the pyr it follows from there is the camera's motion's to bring in.
-  // [design: a drop of a fifth of the cover in one frame; the cover's own fade-in and the view leaving a window's reach are under a twentieth a frame]
-  const LIFT_DROP = 0.2;
-  let liftPrev = null, liftCover = 0;
+  // show
+  let liftPrev = null;
   function liftTick(view) {
     liftLatch = easeLift(stats.liftInfo, view, performance.now());
     if (!PLACE || !view.geo || !Number.isFinite(liftLatch?.pyr)) return false;
-    const p = planetParams(view), c = p.liftOrtho ?? p.ortho ?? 0;
-    if (liftPrev != null && p.liftM != null && c < liftCover - LIFT_DROP) {
-      liftLatch = { ...liftLatch, pyr: (liftPrev - c * p.liftM * (1 + (p.ortho ?? 0) * ((p.scale ?? 1) - 1))) / (1 - c) };
-    }
-    const now = liftOf(p), seen = liftPrev != null && Math.abs(now - liftPrev) * ppmOf(clampZ(view.zoom)) > SEEN_PX;
+    const now = liftOf(planetParams(view)), seen = liftPrev != null && Math.abs(now - liftPrev) * ppmOf(clampZ(view.zoom)) > SEEN_PX;
     liftPrev = now;
-    liftCover = c;
     return seen;
   }
   function liftOf(p) {
@@ -1369,7 +1365,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     sentLift = msg.planet ? msg.planet.lift ?? stats.lift ?? 0 : null;
     stats.canopy = msg.planet?.canopy;
     if (cursorPx && msg.planet) msg.cursor = cursorPx;
-    if (probeGeo && msg.planet) msg.probe = [probeGeo.lat, probeGeo.lon];
+    if (probeGeo && msg.planet) msg.probe = [probeGeo.lat, probeGeo.lon, probeGeo.y];
     if (lutSent !== sky.id) { msg.lut = T.gpu.slice(); lutSent = sky.id; }
     // A frame that says what the last one said (no camera, sky, ground or water step in it, no sprite or table to send) is posted again only once HEARTBEAT_MS have passed, which is how what
     // lands in the worker meanwhile (tiles, pages, a window) still reaches the screen: a still world was drawn 60 times a second for nothing. A game's frames always differ (its things move), so it skips the test.
@@ -1614,7 +1610,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // whether a view's level draws from lists built for it: a level that keeps front lists (the island levels, at a
     // whole bearing) only once the worker has built them; any other at once
     listsReady: (v) => { const L = levelFor(v.zoom).L, b = norm8(v.bearing ?? 0); return !frontLevels.has(L) || !Number.isInteger(b) || fronts.has(`${L}|${b}`); },
-    centreOn, camH, screenOf, solveTarget, groundUnder, tickLattice, camSeen, moving, surfaceY, setCursor: (x, y) => { cursorPx = Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null; }, setProbe: (geo) => { probeGeo = geo ? { lat: geo.lat, lon: geo.lon } : null; }, onGround: (fn) => { onGround = fn; }, get mode() { return mode; },
+    centreOn, camH, screenOf, solveTarget, groundUnder, tickLattice, camSeen, moving, surfaceY, setCursor: (x, y) => { cursorPx = Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null; }, setProbe: (geo, y) => { probeGeo = geo ? { lat: geo.lat, lon: geo.lon, y: Number.isFinite(y) ? y : undefined } : null; }, onGround: (fn) => { onGround = fn; }, get mode() { return mode; },
     // what draws the frames: WebGPU in a worker, on which GPU
     renderer: () => ({ gpu: !lost, name: [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" "), why: lost ?? "", error: lastError ?? "" }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),
@@ -1647,6 +1643,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       planetScreenGeo: (view, geo) => (PLACE ? planetScreen(view, geo) : null),
       // the cells' lattice the planet camera draws with now, the share of it that is the exact one (LAT_COVER) and the face the exact one is read on, for the drag checks
       lattice: (view) => ({ ...latOf(view), cover: LAT_COVER(view), face: latFace, mode }),
+      liftState: (view) => { const p = planetParams(view); return { pyr: liftLatch?.pyr, prev: liftPrev, sent: sentLift, near: liftNear(p), of: liftOf(p), next: liftNext(p), c: p.liftOrtho, liftM: p.liftM, gid }; },
       // the planet camera's look at a view (planet-cam.js takes it as it is) and the lift it stands at, to solve its picks offline
       look: (view) => ({ ...planetParams(view), lift: stats.lift ?? 0, radiusM: PR, w: canvas.width, h: canvas.height }),
       // the drawing's clock held where it is (on), at a given reading (a number: the same animation frame in every run, for stills that must repeat), or let run again (false)
