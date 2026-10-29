@@ -10,9 +10,11 @@ try {
   const idle = async () => { for (let i = 0; i < 60; i++) { await sleep(450); const q = await r.page.evaluate(() => (window as any).play.live.debug.check({ op: "idle" })).catch(() => ({ busy: true })); if (!q.busy) { await sleep(700); return; } } };
   await r.page.evaluate((a: number, b: number, zz: number) => { const P = (window as any).play; P.view.bearing = 0; P.view.geo = { lat: a, lon: b }; P.camera.setZoom(zz); }, lat, lon, Z);
   await idle();
+  // the camera clears the probe every frame it holds no anchor: keep ours
+  await r.page.evaluate(() => { const L = (window as any).play.live, o = L.setProbe; (window as any).__probe = (g: any) => o(g); L.setProbe = (g: any) => { if (g) o(g); }; });
   for (const y of YS) for (const x of XS) {
     await r.page.mouse.move(x, y); await sleep(400);
-    const a = await r.page.evaluate((px: number, py: number) => { const w = window as any, P = w.play, A = P.live.groundUnder(P.view, px, py); P.live.setProbe(A.geo); w.__A = A; return { y: A.y, geo: A.geo }; }, x, y);
+    const a = await r.page.evaluate((px: number, py: number) => { const w = window as any, P = w.play, A = P.live.groundUnder(P.view, px, py); w.__probe(A.geo); w.__A = A; return { y: A.y, geo: A.geo }; }, x, y);
     await sleep(500);
     const b = await r.page.evaluate(() => { const P = (window as any).play, G = P.live.stats.ground; return { probe: G?.probe?.y, at: G?.probe && [G.probe.lat, G.probe.lon] }; });
     console.log(`cursor ${x},${y}: pick y ${a.y?.toFixed(0)}, probe y ${b.probe?.toFixed?.(0)}, gap ${(a.y - b.probe).toFixed(0)} m, mode ${(await r.page.evaluate(() => (window as any).play.live.mode))}`);

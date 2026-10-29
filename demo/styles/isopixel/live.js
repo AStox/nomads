@@ -140,7 +140,11 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // the canvas point the pointer is at, named in each frame so the worker answers with the ground the last picture drew under it (worker.js groundAnswer), and the view each frame was made from, to know when an answer is for the view as it stands
   const viewSigs = new Map();
   let cursorPx = null, probeGeo = null;
-  const viewSig = (view) => `${view.geo?.lat}|${view.geo?.lon}|${view.geo?.hd ?? 0}|${view.zoom}|${view.bearing ?? 0}|${view.up || 0}|${gid}`;
+  const viewSig = (view) => [view.geo?.lat, view.geo?.lon, view.geo?.hd ?? 0, view.zoom, view.bearing ?? 0, view.up || 0, gid];
+  // whether two views draw the same picture: the heading's own rest (headTick sets a tiny one to 0 after the frame was sent, a drag's float noise) shifts it by under a tenth of a px at the edge of the screen
+  // [design: SIG_HD 1e-4 rad, headTick's own cut; the rest to float noise]
+  const SIG_HD = 1e-4, SIG_EPS = 1e-9;
+  const sameSig = (a, b) => !!a && a.length === b.length && a.every((v, i) => (i === 2 ? Math.abs(wrapPi(v - b[i])) <= SIG_HD : Math.abs(v - b[i]) <= SIG_EPS));
   let checkNo = 0;
 
   // ---------- the ground and the levels ----------
@@ -445,7 +449,10 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // the lattice moves once a frame; a camera that holds ground by it moves it once the hold has moved the target (the step is the travel of that frame, so a camera that stops does not step again) and solves the hold
   // again for it, so the hold is solved for the picture drawn, and the frame then takes it as it is. True if the lattice moved.
   let latPre = false;
-  function tickLattice(view) { const moved = latTick(view), lifted = liftTick(view); headMove.seen(view); latPre = true; return moved || lifted; }
+  // A new ground frame (a window swapped in) has the hold solve the target again for the frame's heights: the hop that makes is the frame's, not travel the camera made to step the lattice, the lift and the roll by
+  let motionGid = null;
+  const reframed = (view) => { if (gid !== motionGid) { motionGid = gid; camSeen(view); } };
+  function tickLattice(view) { reframed(view); const moved = latTick(view), lifted = liftTick(view); headMove.seen(view); latPre = true; return moved || lifted; }
   // the target as the hold solved it again for those steps is where the camera stands: the small move that made is not travel to step the lattice, the lift and the roll by, or a camera that stops would step once more
   function camSeen(view) { if (view.geo) latFrom = vecOf(view.geo); headMove.seen(view); liftMove.seen(view); }
   // North up cannot always be held by a drag. At a pole north turns by half a turn as the target crosses it, and near the planet's edge a place cannot be shown where the cursor is with north up
@@ -632,7 +639,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   function drawnUnder(view, sx, sy) {
     syncGeo(view);
     const G = stats.ground;
-    if (!(G?.at && G.sig === viewSig(view) && Math.abs(G.at[0] - sx) < 0.5 && Math.abs(G.at[1] - sy) < 0.5)) return null;
+    if (!(G?.at && sameSig(G.sig, viewSig(view)) && Math.abs(G.at[0] - sx) < 0.5 && Math.abs(G.at[1] - sy) < 0.5)) return null;
     const geo = geoOfVec(G.p), q = planeOf(geo);
     return { x: q?.x ?? 0, z: q?.z ?? 0, y: G.y, geo };
   }
@@ -1339,7 +1346,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the drawing's clock (the water's frame, the fires, the smoke), held still by the page checks (debug.hold)
     const t0 = performance.now(), now = held ?? t0;
     if (sim) simRef = sim;
-    if (latPre) latPre = false; else { latTick(view); liftTick(view); if (PLACE && view.geo) headTick(view); }
+    if (latPre) latPre = false; else { reframed(view); latTick(view); liftTick(view); if (PLACE && view.geo) headTick(view); }
     // the GPU's canvas belongs to the worker once transferred: its size goes there, and is kept here only to compare
     if (glSize[0] !== canvas.width || glSize[1] !== canvas.height) { worker.postMessage({ type: "resize", W: canvas.width, H: canvas.height }); glSize = [canvas.width, canvas.height]; }
     const clock = sim?.clock?.() ?? worldClock;

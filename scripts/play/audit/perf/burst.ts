@@ -15,7 +15,7 @@ try {
       const R = w.__rec;
       if (R && R.A) {
         const P = w.play, A = R.A, s = P.live.screenOf(P.view, A.x, A.z, A.y, A.geo), L = P.live.debug.lattice(P.view), g = P.view.geo;
-        R.f.push({ t, s, z: P.view.zoom, mode: L.mode, cover: L.cover, turn: L.turn, holding: P.camera.holding, ay: P.camera.anchorDiag?.A.y, lat: g.lat, lon: g.lon, lift: P.live.stats.lift });
+        R.f.push({ t, s, z: P.view.zoom, mode: L.mode, cover: L.cover, turn: L.turn, holding: P.camera.holding, ay: P.camera.anchorDiag?.A.y, lat: g.lat, lon: g.lon, lift: P.live.stats.lift, wid: P.live.stats.window?.id, vx: P.view.x, vz: P.view.z, up: P.view.up, hd: g.hd, face: L.face });
       }
       requestAnimationFrame(loop);
     };
@@ -31,16 +31,25 @@ try {
     await sleep(DELAY);
     const cx = 500 + 8 * SX, cy = 400 + 8 * SY;
     const pick = await r.page.evaluate((x: number, y: number) => { const w = window as any, P = w.play, G = P.live.stats.ground, A = P.live.groundUnder(P.view, x, y), v = P.view, g = v.geo; w.__rec = { A: { x: A.x, z: A.z, y: A.y, geo: A.geo }, f: [], t0: performance.now() }; return { y: A.y, answer: G?.at?.map((q: number) => +q.toFixed(1)), sigNow: `${g.lat}|${g.lon}|${g.hd ?? 0}|${v.zoom}|${v.bearing ?? 0}|${v.up || 0}`, sig: G?.sig, lift: P.live.stats.lift }; }, cx, cy);
-    if (process.env.PICK) console.log("pick", JSON.stringify(pick));
+    if (process.env.PICK) { console.log("pick", JSON.stringify(pick)); console.log("gtest", JSON.stringify(await r.page.evaluate((sx: number, sy: number) => (window as any).play.live.debug.check({ op: "gtest", sx, sy }), cx, cy)).slice(0, 1200)); }
+    if (process.env.PICK) await r.page.evaluate(() => { const w = window as any, L = w.play.live; w.__gu = []; if (!L.__o) { L.__o = L.groundUnder; L.groundUnder = (v: any, sx: number, sy: number) => { const a = L.__o(v, sx, sy), G = L.stats.ground; w.__gu.push({ t: Math.round(performance.now() - w.__rec?.t0), sx, sy, y: a?.y, lat: a?.geo?.lat, G: G && { at: G.at, y: G.y, sig: G.sig }, hd: v.geo.hd }); return a; }; } });
+    if (process.env.EVLOG) await r.page.evaluate(() => {
+      const w = window as any, P = w.play, L = P.live; w.__ev = [];
+      const snap = (tag: string, ret?: any) => { const v = P.view, la = L.debug.lattice(v), A = w.__rec?.A, s = A && L.screenOf(v, A.x, A.z, A.y, A.geo); w.__ev.push([Math.round(performance.now() - (w.__rec?.t0 ?? 0)), tag, ret, +v.geo.lat.toFixed(4), +v.geo.lon.toFixed(4), +la.turn.toFixed(4), +la.cover.toFixed(2), +(la.sc ?? 0).toFixed(4), s && s.map((q: number) => +q.toFixed(1)), L.stats.lift && +L.stats.lift.toFixed(0), P.camera.holding ? 1 : 0]); };
+      for (const k of ["tickLattice", "camSeen"]) { const o = L[k]; L[k] = (...a: any[]) => { snap(k + "<"); const r = o(...a); snap(k + ">", r); return r; }; }
+      const og = L.solveTarget; L.solveTarget = (...a: any[]) => { const r = og(...a); snap("solve"); return r; };
+    });
     for (let i = 0; i < TICKS; i++) { await r.page.mouse.wheel({ deltaY: dir * 100 }); await sleep(GAP); }
+    if (process.env.PICK) console.log("gu", JSON.stringify(await r.page.evaluate(() => (window as any).__gu)).slice(0, 1500));
     await idle();
     const f: any[] = await r.page.evaluate(() => { const R = (window as any).__rec; (window as any).__rec = null; return R.f; });
+    if (process.env.EVLOG) { const ev: any[] = await r.page.evaluate(() => (window as any).__ev); const dd = f.map((e) => Math.hypot(e.s[0] - cx, e.s[1] - cy)), b = dd.findIndex((x) => x > 100); if (b >= 0) { const tb = f[b].t - f[0].t; console.log("spike at", tb.toFixed(0)); for (const e of ev) if (e[0] >= tb - 45 && e[0] <= tb + 70) console.log("ev", e.join(" ")); } }
     const d = f.map((e) => Math.hypot(e.s[0] - cx, e.s[1] - cy)), end = d[d.length - 1], worst = Math.max(...d);
     let step = 0;
     for (let i = 1; i < f.length; i++) step = Math.max(step, Math.hypot(f[i].s[0] - f[i - 1].s[0], f[i].s[1] - f[i - 1].s[1]));
     if (end > 2) bad++;
     console.log(`${end <= 2 ? "ok  " : "FAIL"} ${name.padEnd(3)} z${z} delay ${DELAY} ms: held ground off the cursor worst ${worst.toFixed(1)}, at the end ${end.toFixed(1)} px, worst frame step ${step.toFixed(1)}, zoom ${f[0].z.toFixed(2)} to ${f[f.length - 1].z.toFixed(2)}, mode ${f[0].mode} to ${f[f.length - 1].mode}, ${f.length} frames`);
-    if (TRACE) for (let i = 0; i < f.length; i += Number(process.env.EVERY ?? 2)) console.log("  ", (f[i].t - f[0].t).toFixed(0).padStart(5), f[i].s.map((v: number) => v.toFixed(1)).join(","), "d", d[i].toFixed(1), "z", f[i].z.toFixed(3), f[i].mode, "cov", f[i].cover.toFixed(2), "turn", (f[i].turn * 180 / Math.PI).toFixed(2), "hold", f[i].holding ? 1 : 0, "ay", f[i].ay?.toFixed?.(0), "lift", f[i].lift?.toFixed?.(0), `${f[i].lat.toFixed(3)} ${f[i].lon.toFixed(3)}`);
+    if (TRACE) for (let i = 0; i < f.length; i += Number(process.env.EVERY ?? 2)) console.log("  ", (f[i].t - f[0].t).toFixed(0).padStart(5), f[i].s.map((v: number) => v.toFixed(1)).join(","), "d", d[i].toFixed(1), "z", f[i].z.toFixed(3), f[i].mode, "cov", f[i].cover.toFixed(2), "turn", (f[i].turn * 180 / Math.PI).toFixed(2), "hold", f[i].holding ? 1 : 0, "ay", f[i].ay?.toFixed?.(0), "lift", f[i].lift?.toFixed?.(0), `${f[i].lat.toFixed(3)} ${f[i].lon.toFixed(3)}`, "w", f[i].wid, "xz", f[i].vx?.toFixed?.(0), f[i].vz?.toFixed?.(0), "up", f[i].up?.toFixed?.(0), "face", f[i].face);
   }
 } finally { await r.close(); }
 process.exit(bad ? 1 : 0);
