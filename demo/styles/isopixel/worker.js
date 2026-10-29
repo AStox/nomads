@@ -1326,18 +1326,22 @@ async function groundWant(m) {
       // a window made now has its objects made too, and its ground is shown once the blocks the view can touch are made (one level of detail across the screen, plan R6: until then the screen stays as it was)
       const near = fresh ? startObjects(w, viewCells(w, want), !spec) : null;
       if (!spec) {
-        // the page switches to this ground at its next frame: its pages are kept from here (another window's pages made meanwhile would take them, and the switch would make them again with the frames held), and any
-        // that a kept window had lost are made now, behind the frames; its folds are traced behind the frames too, while the blocks the view can touch are made
+        // the page takes the ground's heights in while the objects are made (its camera heights are 0.3 s of its frames' slices): the ground is posted held, as soon as the pages are there, and `groundGo` says the
+        // objects and folds are ready. Its pages are kept from here (another window's pages made meanwhile would take them, and the switch would make them again with the frames held), and any that a kept
+        // window had lost are made now, behind the frames; its folds are traced behind the frames too, while the blocks the view can touch are made
         planet.wins.setPending(w);
         incoming = w;
         await planet.wins.ensure(w);
         const prep = readyGround(w);
-        if (near) await near;
-        w.prep = await prep;
-        tr("posted", w.id);
         prepared = { gid: ++gids, mode: "win", win: w };
         incoming = null;
-        post({ type: "ground", gid: prepared.gid, mode: "win", frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon, face: w.face, x0: w.x0, y0: w.y0 }, fields: w.fields, stats: { ...w.stats, id: w.id, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null } });
+        tr("posted", w.id);
+        post({ type: "ground", gid: prepared.gid, mode: "win", hold: true, frame: { c: w.c, e: w.e, n: w.n, scale: w.scale, rot: w.rot, id: w.id, lat: w.lat, lon: w.lon, face: w.face, x0: w.x0, y0: w.y0 }, fields: w.fields, stats: { ...w.stats, id: w.id } });
+        const mine = prepared;
+        if (near) await near;
+        w.prep = await prep;
+        tr("go", w.id);
+        post({ type: "groundGo", gid: mine.gid, objects: w.blockRecs ? w.blockRecs.reduce((n, b) => n + b.n, 0) : null, share: w.blockK0 !== undefined ? 2 ** -w.blockK0 : null });
       }
     }
   } catch (err) {

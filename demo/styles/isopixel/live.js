@@ -126,6 +126,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     } else if (m.type === "objects") { objectsReady = true; stats.objects = m; onProgress?.(1, 1, "drawing the sprites"); }
     else if (m.type === "progress") onProgress?.(m.d, m.n, m.what);
     else if (m.type === "ground") pendingGround = m;
+    else if (m.type === "groundGo") { if (pendingGround?.gid === m.gid) { pendingGround.hold = false; pendingGround.stats = { ...pendingGround.stats, objects: m.objects, share: m.share }; } }
     else if (m.type === "windowError") console.warn(`window: ${m.error}`);
     else if (m.type === "windowObjects") { (stats.objectLog ??= []).push({ id: m.id, objects: m.objects, share: m.share, ms: Math.round(m.ms), blocks: m.blocks, made: m.made, bytes: m.bytes }); if (stats.window?.id === m.id) Object.assign(stats.window, { objects: m.objects, objectsMs: m.ms, objectsAt: performance.now(), blocks: m.blocks, made: m.made }); }
     else if (m.type === "pick") { picksWait.get(m.id)?.(m.r); picksWait.delete(m.id); }
@@ -1358,7 +1359,8 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const clock = sim?.clock?.() ?? worldClock;
     // the ground's colour follows the season
     season = clock.season ?? season;
-    if (pendingGround) { const f = fieldsSlice(pendingGround); if (f) { applyGroundMsg(pendingGround, view, f); pendingGround = null; } }
+    // the fields are made as the message comes, a held one (the worker is still making the window's objects) is taken in when the worker says go
+    if (pendingGround) { pendingGround.f ??= fieldsSlice(pendingGround); if (pendingGround.f && !pendingGround.hold) { applyGroundMsg(pendingGround, view, pendingGround.f); pendingGround = null; } }
     homeSky = skyFor(clock, now);
     sky = PLACE && view.geo ? skyFor(clock, now, planetSkyAt(homeSky, view.geo)) : homeSky;
     syncGeo(view);

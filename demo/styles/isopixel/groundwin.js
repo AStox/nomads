@@ -8,6 +8,7 @@
 import { CELL, N } from "../island.js";
 import { packGround } from "./ground.wgsl.js";
 import { fetchTileBytes } from "./tilecache.js";
+import { tr } from "./trace.js";
 
 const S = N + 16, H = 8, UNITS = 5000;
 const TYPES = { i8: Int8Array, u8: Uint8Array, i16: Int16Array, u16: Uint16Array, i32: Int32Array, u32: Uint32Array, f32: Float32Array };
@@ -349,8 +350,10 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     await warming;
     const t0 = performance.now(), { face, x0, y0 } = windowAt(lat, lon), pause = sliced();
     const { tl, own, at, srcF, srcX, srcY, turn, planes, src, t1 } = await gather(face, x0, y0);
+    tr("gathered");
     const wp = { face, x0, y0, src };
     wp.made = await ensurePages(wp);
+    tr("paged", wp.made);
     const t2 = performance.now();
 
     // ---------- what grew: each tile's own scatter, made by block (makeBlocks) once the ground is out, nothing read back ----------
@@ -396,6 +399,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
     await pause();
     const rivers = T.windowRivers(src).map((line) => line.map((p) => [p[0], -p[1], ...p.slice(2)]));
     await pause();
+    tr("prepack");
     const pack = packGround(isle, { rivers }, { fine: null, grid: null, mask: null, top: highest + 2, finePitch: 0, fineLayerWords: 0, gridPitch: 0, gridLayerWords: 0 });
     const t3 = performance.now();
     let peak = 0;
@@ -524,7 +528,9 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       } catch (err) { for (const { run } of got) run.close(); throw err; }
       return got;
     };
+    tr("mk0", open.length);
     const opened = await openFor(open), held = new Map(), fresh = [];
+    tr("mk1", opened.length);
     let done = false;
     try {
       for (const { rec, run } of opened) for (const r of rec) { r.run = run; if (!estOf.has(r.key)) estOf.set(r.key, run.est({ bx0: r.bx * BLOCK, by0: r.by * BLOCK, n: BLOCK })); }
@@ -561,6 +567,7 @@ export function createWindows({ G, T, gpu, base, tier, seed, radiusM, quick, kee
       const collect = (list) => { const out = []; for (const r of list) { const b = held.get(r.key); b.pins++; b.staged = true; out.push(b); kds.set(r.key, eOf(r)); } return out; };
       const vis = need.filter((r) => r.vis), out = need.filter((r) => !r.vis);
       await make(vis);
+      tr("mk2", vis.length, fresh.length);
       if (stage && out.length) stage(collect(vis), kds, k0);
       await make(out);
       const all = collect(need);
