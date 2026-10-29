@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { FACES, cellId, tierGrid, type Grid } from "../src/gpu/globe/grid";
 import { neighbours } from "../src/gpu/globe/tectonics";
 
-export const DIR = "/Users/adamstockermans/.cache/nomads-scratch/t7/raw/";
+export const DIR = (process.env.RAW_DIR ?? "/Users/adamstockermans/.cache/nomads-scratch/t7/raw").replace(/\/*$/, "/");
 const bytes = (n: string) => { const b = readFileSync(DIR + n); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength); };
 export function raw() {
   const meta = JSON.parse(readFileSync(DIR + "meta.json", "utf8"));

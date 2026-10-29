@@ -3,13 +3,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { holdGpu, exit } from "../scripts/seeded";
 import { theGpu } from "../src/gpu/device";
-import { runChain, erosionFor, type ChainState } from "../src/gpu/globe/erosion";
+import { runChain, erosionFor, CREEP_SEA, SHELF_SLOPE, type ChainState } from "../src/gpu/globe/erosion";
 import { CHAIN, annualRain, unpackRecord } from "../src/gpu/globe/window";
 import { PLANET_RADIUS_M, FACES, cellId, fieldWords, wordAt, slotOf, inTile, TILE_WORDS } from "../src/gpu/globe/grid";
 import { FLD, PHYS, extTables, fineHeight, makeSetup, unpad } from "../src/gpu/globe/tectonics";
 import { SHIFT } from "../src/gpu/wgsl/globe-grid";
 
-const OUT = "/Users/adamstockermans/.cache/nomads-scratch/t7/raw/", PART = OUT + "part/", BUDGET = Number(process.env.BUDGET ?? 150);
+const OUT = (process.env.RAW_DIR ?? "/Users/adamstockermans/.cache/nomads-scratch/t7/raw").replace(/\/*$/, "/"), PART = OUT + "part/", BUDGET = Number(process.env.BUDGET ?? 150);
 mkdirSync(PART, { recursive: true });
 const wr = (n: string, a: ArrayBufferView) => writeFileSync(OUT + n, new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
 const rd = <T,>(n: string, C: new (b: ArrayBuffer) => T): T => { const b = readFileSync(PART + n); return new C(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); };
@@ -23,7 +23,7 @@ if (existsSync(PART + "meta.json")) {
   resume = { S: rd("S", Int32Array), carryLo: rd("carryLo", Int32Array), carryHi: rd("carryHi", Int32Array), rain: rd("rain", Float32Array), nextRain: m.nextRain, step: m.step, quiet: m.quiet, rounds: m.rounds, ledger: m.ledger };
   before = m.seconds; rv0 = rd("removedV", Float64Array); ad0 = rd("depositedV", Float64Array);
 }
-const res = await runChain(gpu, set, { rain: (h) => annualRain(gpu, h, radius), rainEveryMy: CHAIN.rainEveryMy, substeps: CHAIN.substeps, afterMy: CHAIN.afterMy, resume, budgetS: process.env.WHOLE ? undefined : BUDGET, params: erosionFor(radius), track: true });
+const res = await runChain(gpu, set, { rain: (h) => annualRain(gpu, h, radius), rainEveryMy: CHAIN.rainEveryMy, substeps: CHAIN.substeps, afterMy: CHAIN.afterMy, resume, budgetS: process.env.WHOLE ? undefined : BUDGET, params: { ...erosionFor(radius), creepSea: CREEP_SEA * Number(process.env.CREEP_SEA_X ?? 1), shelfSlope: process.env.SHELF_SLOPE ? Number(process.env.SHELF_SLOPE) : SHELF_SLOPE }, track: true });
 const removedV = res.removedV!, depositedV = res.depositedV!;
 if (rv0) for (let i = 0; i < N; i++) { removedV[i] += rv0[i]; depositedV![i] += ad0![i]; }
 const seconds = before + res.seconds;
@@ -57,6 +57,7 @@ writeFileSync(OUT + "meta.json", JSON.stringify({
   fw, grid: { fn: g.fn, radius: g.radius, faces: FACES, n: N }, FLD, iceFreeSeaLevelM: 0, seaNowM: ice.nowM, seaLowM: ice.lowM, kmPerUnit, seconds, rounds: res.rounds,
 }, null, 1));
 rmSync(PART, { recursive: true, force: true });
+if (process.env.CREEP_SEA_X || process.env.SHELF_SLOPE || process.env.RAW_DIR) { console.log(`dumped variant; ${seconds.toFixed(0)} s`); await exit(0); }
 // the dump's height must be the t5 store's
 const chain = unpackRecord(new Uint8Array(readFileSync("/Users/adamstockermans/.cache/nomads-scratch/t5/bake/small/store/1-b4c6e7d1b819/chain.bin"))).arrays.height as Float32Array;
 let diff = 0; for (let i = 0; i < N; i++) if (chain[i] !== height[i] && !(Number.isNaN(chain[i]) && Number.isNaN(height[i]))) diff++;
