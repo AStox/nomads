@@ -139,6 +139,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   const sentAt = new Map(), checksWait = new Map();
   // the canvas point the pointer is at, named in each frame so the worker answers with the ground the last picture drew under it (worker.js groundAnswer), and the view each frame was made from, to know when an answer is for the view as it stands
   const viewSigs = new Map();
+  // probeGeo: a place the worker answers the height drawn at (setProbe), with the height the page holds it at (terrain metres), which the worker's answer starts from (worker.js drawnHeightAt)
   let cursorPx = null, probeGeo = null;
   const viewSig = (view) => [view.geo?.lat, view.geo?.lon, view.geo?.hd ?? 0, view.zoom, view.bearing ?? 0, view.up || 0, gid];
   // whether two views draw the same picture: the heading's own rest (headTick sets a tiny one to 0 after the frame was sent, a drag's float noise) shifts it by under a tenth of a px at the edge of the screen
@@ -446,12 +447,12 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const cam = planetCamOf(view), a = cam.project(v0), b = cam.project(vecOf(view.geo));
     return a && b ? Math.hypot(a[0] - b[0], a[1] - b[1]) : Infinity;
   }
-  // the lattice moves once a frame; a camera that holds ground by it moves it once the hold has moved the target (the step is the travel of that frame, so a camera that stops does not step again) and solves the hold
-  // again for it, so the hold is solved for the picture drawn, and the frame then takes it as it is. True if the lattice moved.
-  let latPre = false;
   // A new ground frame (a window swapped in) has the hold solve the target again for the frame's heights: the hop that makes is the frame's, not travel the camera made to step the lattice, the lift and the roll by
   let motionGid = null;
   const reframed = (view) => { if (gid !== motionGid) { motionGid = gid; camSeen(view); } };
+  // the lattice moves once a frame; a camera that holds ground by it moves it once the hold has moved the target (the step is the travel of that frame, so a camera that stops does not step again) and solves the hold
+  // again for it, so the hold is solved for the picture drawn, and the frame then takes it as it is. True if the lattice moved.
+  let latPre = false;
   function tickLattice(view) { reframed(view); const moved = latTick(view), lifted = liftTick(view); headMove.seen(view); latPre = true; return moved || lifted; }
   // the target as the hold solved it again for those steps is where the camera stands: the small move that made is not travel to step the lattice, the lift and the roll by, or a camera that stops would step once more
   function camSeen(view) { if (view.geo) latFrom = vecOf(view.geo); headMove.seen(view); liftMove.seen(view); }
