@@ -1573,7 +1573,7 @@ function render() {
         hs += drawnHeight([v[0] / l, v[1] / l, v[2] / l]);
       }
     const pyr = (hs / 9) * ex;
-    liftInfo = { pyr, tier: planetLayer.level?.() ?? 5, lo: f.planet.liftOrtho, lm: f.planet.liftM, sx, ex, lat: f.planet.lat, lon: f.planet.lon, box: reach * planetLayer.radiusM };
+    liftInfo = { id: f.id, pyr, tier: planetLayer.level?.() ?? 5, lo: f.planet.liftOrtho, lm: f.planet.liftM, sx, ex, lat: f.planet.lat, lon: f.planet.lon, box: reach * planetLayer.radiusM };
     const lift = (planetLift = Number.isFinite(f.planet.lift) ? f.planet.lift : Math.max(0, pyr + (f.planet.liftOrtho ?? f.planet.ortho ?? 0) * (f.planet.liftM != null ? f.planet.liftM * sx - pyr : 0)));
     const cam = planetCam({ ...f.planet, q, w: canvas.width, h: canvas.height, radiusM: planetLayer.radiusM, lift });
     if (performance.now() - reliefAtMs > 100) { planetRelief = reliefGrid(cam, lift, ex); reliefAtMs = performance.now(); }

@@ -550,12 +550,21 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   // how long after a jump a finer level's arrival takes the lift at once; in a drag the surface's step is eased as the target's own relief is [design: the arrival of a far jump's tiers, 1.5 s]
   const LIFT_JUMP_MS = 1500;
   const LIFT_PX = 250, LIFT_TAU = 350, liftMove = mover();
-  let liftLatch = null, liftAt = 0, liftSeen = null, liftCarry = 0;
+  let liftLatch = null, liftAt = 0, liftSeen = null, liftCarry = 0, liftNew = null;
+  // A zoom that is set, not eased to (camera.setZoom: a script, a named zoom, a tour), is a new picture, as a jump of the target is: its motion cannot be followed, because the pyr the worker answered when it was
+  // made is for the zoom before (the box the pyr averages over is the view's size), and the answer for the new zoom, a frame or two later, is a pyr for another box that no carry takes up. The lift then stayed at the old
+  // zoom's for good (a third of a screen at D, zoom -1 to 1). So the lift waits for the first answer to a frame sent after the set and stands there whole.
+  const newPicture = () => { liftNew ??= frameNo + 1; };
   const arcM = (a, b) => Math.hypot((a.lat - b.lat) * D2R * PR, ((((a.lon - b.lon + 540) % 360) - 180) * D2R * PR * Math.cos(a.lat * D2R)));
   function easeLift(I, view, now) {
     const px = liftMove.step(view), dt = Math.min(1000, now - liftAt);
     liftAt = now;
     if (!I || !Number.isFinite(I.pyr)) return liftLatch;
+    if (liftNew !== null) {
+      if (!(I.id >= liftNew)) return liftLatch;
+      liftNew = null; liftSeen = I; liftCarry = 0;
+      return { ...I };
+    }
     const L = liftLatch;
     // tiles of a finer level have arrived (the surface the planet pass marches changes at once, wgsl/globe.js gMarch): the camera stands at the height of that surface from this frame, not eased to it, or the picture
     // slides by the difference while the finer level fades in (a far jump: 130 m at A, a screen's width and more at zoom 3)
@@ -1611,7 +1620,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // whether a view's level draws from lists built for it: a level that keeps front lists (the island levels, at a
     // whole bearing) only once the worker has built them; any other at once
     listsReady: (v) => { const L = levelFor(v.zoom).L, b = norm8(v.bearing ?? 0); return !frontLevels.has(L) || !Number.isInteger(b) || fronts.has(`${L}|${b}`); },
-    centreOn, camH, screenOf, solveTarget, groundUnder, tickLattice, camSeen, moving, surfaceY, setCursor: (x, y) => { cursorPx = Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null; }, setProbe: (geo, y) => { probeGeo = geo ? { lat: geo.lat, lon: geo.lon, y: Number.isFinite(y) ? y : undefined } : null; }, onGround: (fn) => { onGround = fn; }, get mode() { return mode; },
+    centreOn, camH, screenOf, solveTarget, groundUnder, tickLattice, camSeen, newPicture, moving, surfaceY, setCursor: (x, y) => { cursorPx = Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null; }, setProbe: (geo, y) => { probeGeo = geo ? { lat: geo.lat, lon: geo.lon, y: Number.isFinite(y) ? y : undefined } : null; }, onGround: (fn) => { onGround = fn; }, get mode() { return mode; },
     // what draws the frames: WebGPU in a worker, on which GPU
     renderer: () => ({ gpu: !lost, name: [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" "), why: lost ?? "", error: lastError ?? "" }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),

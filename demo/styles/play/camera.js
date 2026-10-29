@@ -48,7 +48,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
       }
       return st;
     },
-    setZoom(z) { if (Number.isFinite(z)) { goal = zoomSet = view.zoom = clamp(z, live.zmin, live.zmax); anchor = null; tried = null; } },
+    setZoom(z) { if (Number.isFinite(z)) { goal = zoomSet = view.zoom = clamp(z, live.zmin, live.zmax); anchor = null; tried = null; live.newPicture(); } },
     // the mid-screen target point is held at centre + (dx, dy), so the image moves exactly with the cursor
     panBy(dx, dy) {
       if (!finite(dx, dy) || (!dx && !dy && !view.up)) return;
@@ -128,7 +128,7 @@ export function createCamera({ live, view, canvas, onTurn }) {
     offCentre(p) { const s = live.screenOf(view, p.x, p.z, p.y), [cx, cy] = half(); return Math.hypot(s[0] - cx, s[1] - cy); },
     step(dt, now) {
       // a zoom set from outside (a script, the bench) is taken as the new goal
-      if (view.zoom !== zoomSet) { goal = zoomSet = view.zoom; anchor = null; tried = null; }
+      if (view.zoom !== zoomSet) { goal = zoomSet = view.zoom; anchor = null; tried = null; live.newPicture(); }
       turnStep(dt, now);
       cam.regrab();
       if (((grab?.A && grab.on) || anchor) && live.tickLattice(view)) { cam.regrab(); live.camSeen(view); }
