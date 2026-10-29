@@ -15,7 +15,7 @@ try {
       await r.page.evaluate((a: number, b: number, zz: number) => { const P = (window as any).play; P.view.geo = { lat: a, lon: b }; P.camera.setZoom(zz); }, la, lo, z);
       await idle();
       await r.page.screenshot({ path: `${OUT}/${n}_z${z}.png` });
-      console.log(n, z, JSON.stringify(await r.page.evaluate(() => (window as any).play.live.stats.lift)));
+      console.log(n, z, JSON.stringify(await r.page.evaluate(() => { const P = (window as any).play, L = P.live, a = L.debug.lattice(P.view); return { lift: L.stats.lift, pyr: L.stats.liftInfo?.pyr, sc: a.sc, turn: a.turn, hd: P.view.geo.hd ?? 0, geo: [P.view.geo.lat, P.view.geo.lon] }; })));
     }
   }
 } finally { await r.close(); }
