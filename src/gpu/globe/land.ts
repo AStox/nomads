@@ -3,7 +3,8 @@
 // regional step (regional.ts Regional.step), over a patch whose halo is read and never written: a river that reaches the halo leaves the region there, as if into the sea.
 import { openSync, readSync, closeSync } from "node:fs";
 import type { Gpu } from "../device";
-import { patchAt, type Patch } from "./patch";
+import { cellAcross, patchAt, type Patch } from "./patch";
+import { tierGrid } from "./grid";
 import { REFINE_HALO, REFINE_PASSES, refineBlock } from "./tiers-stream";
 import { RegionalPatch, TREE } from "./regional-patch";
 import { creepSubsOf } from "./regional";
@@ -13,19 +14,55 @@ import { SOLVE_SWEEPS } from "../wgsl/globe-regional";
 const INF = 0x7fffffff;
 const NP = 6 * 256 * 256;
 
-// The children, at the tier above `from`, of a square of tier-`from` cells (interior `size`, from face position (X0, Y0)) of a field kept whole in `parent` (indexed by cell id).
+// The children, at the tier above `from`, of a square of tier-`from` cells (interior `size`, from face position (X0, Y0)) of a field kept whole in `parent` (indexed by cell id), laid out in the
+// face's own axes, row by row. A square that reaches past the face's edge (the face lattice continued flat, as patchAt lays it) has its cells across the edge made in the neighbouring face's own
+// axes, as the streamed carry makes them (the stencil's neighbours are the cell's own face's), and put where the lattice continues; a cube corner's missing cells are 0.
 export function refineRegion(parent: ArrayLike<number>, from: number, face: number, X0: number, Y0: number, size: number): Int32Array {
-  return refineBlock(parent, from, patchAt(from, face, X0, Y0, REFINE_HALO, size), REFINE_PASSES);
+  const gp = tierGrid(from), n = gp.fn;
+  if (X0 >= 0 && Y0 >= 0 && X0 + size <= n && Y0 + size <= n) return refineBlock(parent, from, patchAt(from, face, X0, Y0, REFINE_HALO, size), REFINE_PASSES);
+  const gc = tierGrid(from + 1), nc = gc.fn, ic = 2 * size, out = new Int32Array(ic * ic), T = Math.min(EDGE_TILE, n);
+  // the children of the cells of face f's rectangle [xa, xb) by [ya, yb), a square block at a time, each given to `put` with its cell's place at the tier above
+  const run = (f: number, xa: number, ya: number, xb: number, yb: number, put: (cx: number, cy: number, v: number) => void) => {
+    for (let y = ya; y < yb; y += T) for (let x = xa; x < xb; x += T) {
+      const xs = Math.min(x, n - T), ys = Math.min(y, n - T), kids = refineBlock(parent, from, patchAt(from, f, xs, ys, REFINE_HALO, T), REFINE_PASSES);
+      for (let j = 0; j < 2 * T; j++) for (let i = 0; i < 2 * T; i++) put(2 * xs + i, 2 * ys + j, kids[j * 2 * T + i]);
+    }
+  };
+  const xa = Math.max(0, X0), xb = Math.min(n, X0 + size), ya = Math.max(0, Y0), yb = Math.min(n, Y0 + size);
+  if (xa < xb && ya < yb) run(face, xa, ya, xb, yb, (cx, cy, v) => { const x = cx - 2 * X0, y = cy - 2 * Y0; if (x >= 0 && y >= 0 && x < ic && y < ic) out[y * ic + x] = v; });
+  // the cells past the edges, by the face they fall on
+  const by = new Map<number, { xa: number; xb: number; ya: number; yb: number }>(), cells = n * n;
+  for (let Y = Y0; Y < Y0 + size; Y++) for (let X = X0; X < X0 + size; X++) {
+    if (X >= 0 && Y >= 0 && X < n && Y < n) continue;
+    const id = cellAcross(gp, face, X, Y);
+    if (id < 0) continue;
+    const f = Math.floor(id / cells), r = id - f * cells, y = Math.floor(r / n), x = r - y * n, b = by.get(f);
+    if (!b) by.set(f, { xa: x, xb: x + 1, ya: y, yb: y + 1 });
+    else { b.xa = Math.min(b.xa, x); b.xb = Math.max(b.xb, x + 1); b.ya = Math.min(b.ya, y); b.yb = Math.max(b.yb, y + 1); }
+  }
+  const across = new Map<number, number>();
+  for (const [f, b] of by) run(f, b.xa, b.ya, b.xb, b.yb, (cx, cy, v) => across.set((f * nc + cy) * nc + cx, v));
+  for (let y = 0; y < ic; y++) for (let x = 0; x < ic; x++) {
+    const cx = 2 * X0 + x, cy = 2 * Y0 + y;
+    if (cx >= 0 && cy >= 0 && cx < nc && cy < nc) continue;
+    const id = cellAcross(gc, face, cx, cy);
+    out[y * ic + x] = id < 0 ? 0 : across.get(id) ?? 0;
+  }
+  return out;
 }
+const EDGE_TILE = 64;
 
 // Tier 4 over a tier-5 region (interior `size` cells from (x0, y0) of a face) and the ring the next carry reads, carried down from tier 3's file by refineBlock as the chain carries it, in a
-// tier-4 array (the whole tier's length, zero outside the block).
+// tier-4 array (the whole tier's length, zero outside the block). A block past the face's edge puts its cells across the edge in the neighbouring face's cells.
 export function regionBlock4(t3: ArrayLike<number>, face: number, x0: number, y0: number, size: number): Int32Array {
-  const fn4 = 256 << 4, t4 = new Int32Array(6 * fn4 * fn4);
+  const g4 = tierGrid(4), fn4 = g4.fn, t4 = new Int32Array(6 * fn4 * fn4);
   const X4 = x0 / 2 - REFINE_HALO, Y4 = y0 / 2 - REFINE_HALO, S4 = size / 2 + 2 * REFINE_HALO;
-  if (X4 < 0 || Y4 < 0 || X4 + S4 > fn4 || Y4 + S4 > fn4 || X4 % 2 || Y4 % 2 || S4 % 2) throw new Error("regionBlock4: the region is too near its face's edge for the carry's rings");
+  if (X4 % 2 || Y4 % 2 || S4 % 2) throw new Error("regionBlock4: the block does not start on a tier-3 cell");
   const c = refineRegion(t3, 3, face, X4 / 2, Y4 / 2, S4 / 2);
-  for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) t4[(face * fn4 + Y4 + y) * fn4 + X4 + x] = c[y * S4 + x];
+  for (let y = 0; y < S4; y++) for (let x = 0; x < S4; x++) {
+    const id = cellAcross(g4, face, X4 + x, Y4 + y);
+    if (id >= 0) t4[id] = c[y * S4 + x];
+  }
   return t4;
 }
 // The tier-5 interior of the region from tier 4's cells (regionBlock4's, or those a tier-4 solve has made).
