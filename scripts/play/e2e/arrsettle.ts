@@ -5,7 +5,9 @@ await launch([1280, 800], "hour=13&warm=0", async (page) => {
   const idle = idleWaiter(page, 300);
   const hp = (d: Buffer) => { const W = 600, H = 400, o = new Float32Array(W * H); for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) o[y * W + x] = d[y * W + x] * 4 - d[y * W + x - 1] - d[y * W + x + 1] - d[(y - 1) * W + x] - d[(y + 1) * W + x]; return o; };
   const corr = (a: Float32Array, b: Float32Array) => { let s = 0, na = 0, nb = 0; for (let i = 0; i < a.length; i += 2) { s += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; } return s / Math.sqrt(na * nb + 1e-9); };
-  for (const [name, lat, lon, z, hour] of PLACES) {
+  const ALL: [string, number, number, number, number][] = [];
+  for (const [pn, la, lo, hr] of [["A", 4.35, -39.38, 17.2], ["B", -35.9, 43.59, 11.7], ["home", 49.02, 39.29, 12], ["R", 8.32, 88.3, 8.7], ["E2", 13.27, 45, 11.6]] as [string, number, number, number][]) for (const zz of [2, 3, 4]) ALL.push([`${pn} z${zz}`, la, lo, zz, hr]);
+  for (const [name, lat, lon, z, hour] of process.env.ARR === "all" ? ALL : PLACES) {
     await page.evaluate((h: number) => { const el = document.querySelector("#hud input") as HTMLInputElement | null; if (el) { el.value = String(h); el.dispatchEvent(new Event("input", { bubbles: true })); } }, hour);
     await page.evaluate(() => { const P = (window as any).play; P.view.geo = { lat: -60, lon: 170 }; P.camera.setZoom(1); });
     await idle();
@@ -14,6 +16,7 @@ await launch([1280, 800], "hour=13&warm=0", async (page) => {
     for (let i = 0; i < 20; i++) { const b = await page.screenshot({ type: "jpeg", quality: 88 }); shots.push(await sharp(b).extract({ left: 100, top: 100, width: 600, height: 400 }).removeAlpha().greyscale().raw().toBuffer()); ts.push(Date.now() - t0); await sleep(120); }
     const h = shots.map(hp), last = h[h.length - 1], c = h.map((x, i) => [ts[i], +corr(x, last).toFixed(2)]);
     const first = c.find((x) => x[1] >= 0.9);
-    console.log(JSON.stringify({ name, firstFrameCorr: c[0][1], t90ms: first ? first[0] : null, corr: c.filter((_, i) => i % 3 === 0) }));
+    let pop = 0, popAt = 0; for (let i = 1; i < c.length; i++) if (c[i][1] - c[i - 1][1] > pop) { pop = c[i][1] - c[i - 1][1]; popAt = c[i][0]; }
+    console.log(JSON.stringify({ name, firstFrameCorr: c[0][1], t90ms: first ? first[0] : null, pop: +pop.toFixed(2), popAtMs: popAt, corr: c.filter((_, i) => i % 3 === 0) }));
   }
 });

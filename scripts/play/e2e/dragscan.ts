@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs";
 import { launch, sleep, idleWaiter } from "./lib.ts";
 const PL: Record<string, [number, number]> = { B: [-35.9, 43.59], A: [4.35, -39.38], R: [12.02, 83.89], H: [47.78, 38.63], M: [-26.17, -36.17], E2: [13.27, 45.0], D: [-25.71, -40.51] };
 const DIR: Record<string, [number, number]> = { E: [5, 0], W: [-5, 0], N: [0, -5], S: [0, 5], NE: [4, -4], SW: [-4, 4] };
+if (process.env.CUSTOM) { const [a, b] = process.env.CUSTOM.split(",").map(Number); PL.X = [a, b]; }
 const [VW, VH] = (process.env.VP ?? "1280x800").split("x").map(Number);
 const ZS = (process.env.ZS ?? "-2,-1,0,1,2.5").split(",").map(Number), PLACES = (process.env.PLACES ?? "B,A,R,H,M").split(","), DIRS = (process.env.DIRS ?? "E,N").split(","), STEPS = +(process.env.STEPS ?? 40);
 const hour = process.env.HOUR ?? "13";
