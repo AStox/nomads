@@ -1,0 +1,35 @@
+# Coast artifacts of the rejected planet: whole-metre tier-0 heights and the box limiter (2026-10-29)
+
+Chain: `2026-10-28-straight-shapes-limiter-beds-creep-and-the-final-branch.md` (the limiter and the final branch), `2026-10-28-v13r-v14r-built-gated-and-rebake-plan.md`. Branches (local): `globe-t5` (V13rb tiers 1 to 3 plus both fixes), `globe-t5-a` (the same with tiers 1 to 3 carry only, the V13r laws). Pictures and scripts: scratch `~/.cache/nomads-scratch/t5/out` and `wt/scratch`.
+
+## What the rejected planet showed
+
+From the ground the coasts are the 2.4 km tier-0 lattice: sawtooth 45 degree coasts, staircases, squared pits and lakes, pale water blotches. T4 had measured it as tier-0 cell edges carried unchanged to tier 5 over flat coastal plains (4.8% of land cells at +0.034 m).
+
+## Cause 1: tier-0 heights are whole metres
+
+- `Twin.elevOf` (tectonics.ts) truncates the isostatic height to a metre (`Math.trunc`, and the thickness of each rock is floored to a metre), so `derive`'s `height` is whole metres. Every column within a metre of the sea is exactly 0: the chain has 4,789 cells at exactly 0 (the old chain 853), and the ice stage's sea level (`nowM` -0.0345 m, the bed after the ice less that) makes them land at +0.0345 m. That is T4's 4.8% at the floor. The whole-metre steps also make terraces of the coastal plain: land cells at 1, 2, 3 m are 2,531, 2,028, 1,650 where the plain's gradient is 1 to 5 m a 2.4 km cell, the size of the quantum.
+- The relief law and the ice stage's offset are not the cause. The erosion kernel itself works at 1/16 m (`height_of`), and the chain's final state reproduces byte for byte (land share, every whole-metre height).
+- Fix: `fineHeight` (tectonics.ts), the same isostasy formula in floats, is the chain's exported `height` (window.ts chainStage). Land under 0.1 m falls from 4.8% to 0.4%, under 1 m from 4.8% to 3.9%. `trunc` of it differs from the old export by at most 2.1 m (the thickness floors).
+
+## The coastal plains are Earth-like (not a bug)
+
+Land under 10 m is 15.5% of the new planet's land and 2.4% of the old chain's. Earth's contiguous coastal zone under 10 m is 2% of land (McGranahan, Balk and Anderson 2007, Environment and Urbanization 19: 17 to 37, SRTM 1 km). But the planet's coast to land ratio is about 6 times Earth's (about 1.4e-2 against 2.4e-3 per km: small continents), so the mean width of land under 10 m (area over coast length) is 11 km here against 7 to 10 km on Earth; the old chain's plains are 1 km wide (cliffy coasts). Keep the relief law as it is. Inland cells at 0 to 1 m (at least 10 cells from the sea): 525, only 76 of them with a river's drainage (over 20 cells): they are flats, not graded rivers; the chain has 12 sea cells with no way to the ocean.
+
+## Cause 2: the box limiter makes constant squares
+
+`limitChildren` held each child between the least and the greatest of its parent's 3 x 3 (Barth and Jespersen 1989) and then restored the parent's mean. At a parent that is a strict extremum of its 3 x 3 the box is the parent's own value, so all four children are equal (1.8% of tier-1 parents have four equal children), and a constant parent block carried down is a constant 4 x 4, 8 x 8 ...: every tier-0 peak and pit becomes a flat square of the cell's footprint (the squared pits at 8 x 12 cells of tier 3, rectangle "frames", the staircases where a flat plain meets a cliff). Fine heights alone do not remove it (picture row 2). Every limiter tried that holds children to a range of the parents, or limits a slope by the neighbours' differences (minmod, MC, ENO, monotone along an axis, a box extended by the cell's prominence), keeps the coast on the tier-0 cell edge where a plain meets a cliff or a flat cell (pictures `cv-*-fine-mono`, `-eno`, `-pbj`, `-slb`).
+
+## The limiter now: the sea level's maximum principle (Zhang and Shu scaling)
+
+The unlimited 4-pass carry rings at cliffs: 5.2% of tier-1 children leave the parents' 3 x 3 range, 0.4% by over 100 m, and 7,887 sea children sit under parents that are all land (4,487 deeper than 10 m: inland sea pits and strips, `F2`). Nothing but the sea level says such a child is wrong, so `limitSea` (regional.ts, in refineSmooth and refineBlock) applies only where all nine parents are land (or all sea) and a child is not: the children are scaled toward the parent's mean, w' = mean + theta (w - mean), by the largest theta that keeps them one unit on their parents' side (Zhang and Shu 2010, J. Comput. Phys. 229: 3091, and 2011, Proc. R. Soc. A 467: 2752, the scaling of a reconstruction toward the cell mean to keep a bound), and the integer mean is restored among the children that can move. No constant, no epsilon. Result on the planet's tier 0 to 1: constant blocks 0%, sea children under all-land parents 0 (7,887), land children over the range by 100 m: unchanged (2,150, high terrain). Everywhere else the carry is free, a coast moves inside the cells that hold it.
+
+## Pictures (carry only, tiers 0 to 5, no erosion: scratch `out/cv-*`)
+
+Rows: rejected planet; fine heights with the box limiter; fine heights no limiter; fine heights with `limitSea`. River mouth, K3, shelf, B (`cv-<place>-int-lim+fine-lim+fine-raw+fine-zs.png`): the staircase and the squares of rows 1 and 2 are gone in rows 3 and 4; the coasts are smooth, no tier-0 edge.
+
+## Built and run (region harness, four tiles a place, tier 4 28 steps then tier 5 6 steps)
+
+Both fixes in one chain (key `b4c6e7d1b819`, branch `globe-t5`): A = tiers 1 to 3 carry only (`globe-t5-a`, 10 s for tiers 1 to 3), B = tiers 1 to 3 eroded under the band hold of span 2 (V13rb, 667 s). Straight gates on T4's six place windows (old / rejected / A / B): coast reversals per 100 km pooled 10.1 / 14.2 / 11.7 / 19.0, axis share at 32 cells .147 / .335 / .257 / .215, squared pits .05 / .214 / .167 / .118. Per window A is at or under the old planet's maximum (14.9 reversals) in four of six (it exceeds at B 19.1 and lake 17.2), B in one of six. The staircase and the squares are gone in both (pictures `out/t5-<place>-384-AB.png`, rows old, rejected, A, B). The lock windows are 0 in every big region for both (R1, home, R block), ridge wavelength 3.2 / 2.3 / 3.6 km (A) and 2.3 / 2.3 / 3.6 km (B): the river and ridge gains are kept (the tier-0 chain and tiers 4 and 5 are the same code).
+
+Still open: (1) tier-0 data has straight coasts along a lattice column (the shelf and spit windows, a 27 km straight west coast of the island at 53.8 N 27.3 E: a 4 m plain beside a sea 100 m deep and 1.8 km deep six cells on); both A and B carry it. (2) Tier 4 turns a plain that is 57% under 1 m at tier 3 into 30 to 37% of land at exactly the 1/256 m floor (river mouth window; land mean kept within 2.5%): the implicit stream power law flattens channels to base level and nothing keeps a gradient (the fine tiers have no uplift law). Dead flat (four equal neighbours) at the river mouth: rejected 41.5%, A 28.3%, B 17.9%; old 0. (3) A lone tier-0 cell below the sea level inside land is a rounded square of sea.
