@@ -109,7 +109,7 @@ async function climateOf(gpu: Gpu, height: Float32Array, radius: number): Promis
     catch (e) { if (windowDays <= 0.25 * s || !String(e).includes("accumulator")) throw e; }
   }
 }
-const annualRain = async (gpu: Gpu, height: Float32Array, radius: number) => {
+export const annualRain = async (gpu: Gpu, height: Float32Array, radius: number) => {
   const c = await climateOf(gpu, height, radius), out = new Float32Array(height.length);
   for (const s of c.seasons) for (let i = 0; i < out.length; i++) out[i] += s.rain[i];
   return out;

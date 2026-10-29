@@ -747,7 +747,7 @@ export async function runChain(gpu: Gpu, set: Setup, o: ChainOptions, from?: Ret
   const stop = async (step: number, quiet: number): Promise<ChainResult> => {
     const [carryLo, carryHi] = await Promise.all([er.readE(EF.CL), er.readE(EF.CH)]);
     const stopped: ChainState = { S: await tec.read(), carryLo, carryHi, rain, nextRain, step, quiet, rounds, ledger: [String(total.removed), String(total.deposited), String(total.dissolved)] };
-    return { S: stopped.S, ledger: total, carry: 0n, rain, flow: undefined as unknown as Flow, rounds, seconds: (performance.now() - t0) / 1000, stopped };
+    return { S: stopped.S, ledger: total, carry: 0n, removedV, depositedV, rain, flow: undefined as unknown as Flow, rounds, seconds: (performance.now() - t0) / 1000, stopped };
   };
   try {
     if (r0) { tec.stepNo = r0.step; er.loadCarry(r0.carryLo, r0.carryHi); er.setRain(rain); }
