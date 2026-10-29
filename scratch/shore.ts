@@ -178,7 +178,7 @@ function buildChain() {
 // significant height exceeded 12 h a year: the speed exceeded 12 h a year in a Rayleigh wind, 2.90 times its mean, in the most exposed direction, plus the berm height.
 type Dir = { wx: number; wy: number; p: number; E: number; fetchKm: number };
 const g5 = tierGrid(5, PLANET_RADIUS_M), g0 = tierGrid(0, PLANET_RADIUS_M);
-function climate(sx: number, sy: number, berm: number) {
+function climate(sx: number, sy: number, berm: number, sites: [number, number][]) {
   const X = tx * 256 + sx, Y = ty * 256 + sy, p = pointAt(g5, face, X, Y), px = pointAt(g5, face, X + 1, Y), mx = pointAt(g5, face, X - 1, Y), py = pointAt(g5, face, X, Y + 1), my = pointAt(g5, face, X, Y - 1);
   const unit = (a: V3, b: V3): V3 => { const d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]], n = Math.hypot(d[0], d[1], d[2]); return [d[0] / n, d[1] / n, d[2] / n]; };
   const ex = unit(px, mx), ey = unit(py, my), [east, north] = eastNorth(p);
@@ -188,15 +188,21 @@ function climate(sx: number, sy: number, berm: number) {
   const toward = Math.atan2(wt.east[i], wt.north[i]); // bearing the wind blows toward
   const fromW = toward + Math.PI;                      // bearing it blows from
   const h0f = new Float32Array(new Uint8Array(readFileSync(process.env.SHORE_H0 ?? "/Users/adamstockermans/.cache/nomads-scratch/t7/raw/height.f32")).buffer);
+  // fetch from a point 4 cells off the coast at each of up to 32 sample places on the low coast, averaged: the tier-0 coast is 2.4 km a cell, so one point can sit in a coarse bay or on its land
+  const siteVecs = sites.map(([x, y]) => { const X = tx * 256 + Math.floor(x), Y = ty * 256 + Math.floor(y), q = pointAt(g5, face, X, Y, x - Math.floor(x), y - Math.floor(y)); return { q, en: eastNorth(q) }; });
   const fetch = (bearing: number) => {
-    const dir: V3 = [Math.sin(bearing) * east[0] + Math.cos(bearing) * north[0], Math.sin(bearing) * east[1] + Math.cos(bearing) * north[1], Math.sin(bearing) * east[2] + Math.cos(bearing) * north[2]];
-    let sea0 = -1, s = 0;
-    for (; s <= 600e3; s += 1200) {
-      const a = s / PLANET_RADIUS_M, q: V3 = [Math.cos(a) * p[0] + Math.sin(a) * dir[0], Math.cos(a) * p[1] + Math.sin(a) * dir[1], Math.cos(a) * p[2] + Math.sin(a) * dir[2]];
-      const pl = locateVec(g0, q), land = h0f[(pl.face * 256 + pl.Y) * 256 + pl.X] > 0;
-      if (sea0 < 0) { if (!land) sea0 = s; else if (s > 8000) return 0; } else if (land) return Math.max(2400, s - sea0);
+    let sum = 0;
+    for (const { q: p, en: [east, north] } of siteVecs) {
+      const dir: V3 = [Math.sin(bearing) * east[0] + Math.cos(bearing) * north[0], Math.sin(bearing) * east[1] + Math.cos(bearing) * north[1], Math.sin(bearing) * east[2] + Math.cos(bearing) * north[2]];
+      let sea0 = -1, found = 600e3;
+      for (let s = 0; s <= 600e3; s += 1200) {
+        const a = s / PLANET_RADIUS_M, q: V3 = [Math.cos(a) * p[0] + Math.sin(a) * dir[0], Math.cos(a) * p[1] + Math.sin(a) * dir[1], Math.cos(a) * p[2] + Math.sin(a) * dir[2]];
+        const pl = locateVec(g0, q), land = h0f[(pl.face * 256 + pl.Y) * 256 + pl.X] > 0;
+        if (sea0 < 0) { if (!land) sea0 = s; else if (s > 8000) { found = 0; break; } } else if (land) { found = Math.max(2400, s - sea0); break; }
+      }
+      sum += sea0 < 0 ? 0 : found;
     }
-    return sea0 < 0 ? 0 : 600e3;
+    return sum / siteVecs.length;
   };
   const waves = (u: number, Fm: number) => {
     const UA = 0.71 * u ** 1.23, x = G * Fm / (UA * UA);
@@ -371,7 +377,9 @@ for (let i = 0; i < nv; i++) if (vmob[i]) { lowCells++; const c = vc[i]; sx += c
 if (!lowCells) { console.log(`${name}: no low coast`); for (const y of years) out(y); process.exit(0); }
 berms.sort((a, b) => a - b);
 const berm = Math.min(3, Math.max(0.5, berms.length ? berms[berms.length >> 1] : 1));
-const clim = climate(Math.round(sx / lowCells), Math.round(sy / lowCells), berm);
+const lowIdx: number[] = []; for (let i = 0; i < nv; i++) if (vmob[i]) lowIdx.push(i);
+const sites: [number, number][] = []; for (let q = 0; q < lowIdx.length; q += Math.max(1, Math.floor(lowIdx.length / 32))) { const i = lowIdx[q]; sites.push([(vc[i] % S) + 0.5 + 4 * vnx[i], ((vc[i] / S) | 0) + 0.5 + 4 * vny[i]]); }
+const clim = climate(Math.round(sx / lowCells), Math.round(sy / lowCells), berm, sites);
 const V = CELL * CELL * clim.D, Emax = Math.max(...clim.dirs.map((d) => d.E)), Qmax = K * Emax * SHAPE_MAX, DT = FRAC * V / Qmax;
 // each direction has its own step, the one that moves FRAC of a cell's volume at the greatest flux (at most 2 days); directions are drawn with probability p / dt and the clock runs dt / (share of
 // time with any fetch) so that every direction holds its share of the years
