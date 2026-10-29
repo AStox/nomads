@@ -26,7 +26,7 @@ await launch([VW, VH], `hour=${hour}&warm=0`, async (page) => {
     });
     await page.mouse.down(); let px = cx, py = cy;
     for (let i = 0; i < STEPS; i++) { px += dx; py += dy; await page.mouse.move(px, py); await sleep(25); }
-    await sleep(300); const cut: number = await page.evaluate(() => (window as any).__fr.length); await page.mouse.up(); await sleep(700);
+    await sleep(+(process.env.HOLD ?? 300)); const cut: number = await page.evaluate(() => (window as any).__fr.length); await page.mouse.up(); await sleep(700);
     const all: any[] = await page.evaluate(() => { const w = window as any; w.__on = false; return w.__fr; });
     const fr = all.slice(0, cut), rel = all.slice(cut);
     // jump = how far the grabbed point moved on screen beyond the mouse's own move between two frames (held phase only)
