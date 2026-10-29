@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 export const puppeteer = (await import(join(homedir(), ".bun/install/global/node_modules/puppeteer-core"))).default;
 export const sharp = (await import(join(homedir(), ".bun/install/global/node_modules/sharp/dist/index.cjs"))).default;
 export const sleep = Bun.sleep;
-export const HOME_E2E = join(homedir(), ".cache/nomads-scratch/e2e");
+export const HOME_E2E = join(homedir(), ".cache/nomads-scratch/e2e3");
 export const SITE = process.env.SITE ?? "http://127.0.0.1:8197";
 export const PROFILE = join(HOME_E2E, "chrome");
 export async function launch(vp: [number, number], query: string, fn: (page: any, cdp: any, browser: any, errs: any[]) => Promise<void>) {

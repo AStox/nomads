@@ -1,6 +1,6 @@
 #!/bin/bash
 # wait for a newer site build (index.html mtime), then run a round: watch.sh <lastCommit> <firstSeed>
-H=$HOME/.cache/nomads-scratch/e2e; cd $H; export PATH="$HOME/.bun/bin:$PATH"
+H=$HOME/.cache/nomads-scratch/e2e3; cd $H; export PATH="$HOME/.bun/bin:$PATH"
 last=$1; seed=$2
 site0=$(stat -f %m ~/.cache/nomads-play/play/index.html)
 for i in $(seq 1 2000); do

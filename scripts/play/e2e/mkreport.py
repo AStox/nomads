@@ -1,5 +1,5 @@
 import json,shutil,os,sys,html
-H=os.path.expanduser('~/.cache/nomads-scratch/e2e')
+H=os.path.expanduser('~/.cache/nomads-scratch/e2e3')
 PREFIX=sys.argv[1]; RD=os.path.expanduser('~/.cache/nomads-play/reports')
 ROUND=sys.argv[2] if len(sys.argv)>2 else 'round 1'
 issues=json.load(open(f'{H}/issues.json'))

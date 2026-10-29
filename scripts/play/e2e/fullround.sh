@@ -1,5 +1,5 @@
 #!/bin/bash
-export PATH="$HOME/.bun/bin:$PATH"; cd $HOME/.cache/nomads-scratch/e2e
+export PATH="$HOME/.bun/bin:$PATH"; cd $HOME/.cache/nomads-scratch/e2e3
 ./round.sh 202:1280x800 203:1920x1080 204:800x1000 205:1280x800
 ONLY=EQ,PE,CO,CS ZS=-2,1.5,3 lockf /tmp/nomads-gpu.lock bun dragedge.ts dragedge-r26.json 2>&1 | cut -c1-200 > logs/dragedge-r26.log
 lockf /tmp/nomads-gpu.lock bun burstx.ts 2>&1 | cut -c1-200 > logs/burst-r26.log
