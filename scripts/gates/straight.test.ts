@@ -114,9 +114,9 @@ const maskOf = (side: number, f: (x: number, y: number) => boolean) => { const m
 describe("coast teeth", () => {
   test("a staircase of 32 by 32 cell steps reverses at every step; a square island and a disc never do", () => {
     const side = 512, stairs = field(side, (x, y) => (y >= 100 + 32 * Math.floor(x / 32) ? 50 : -50)), t = coastTeeth(chainsOf(stairs, side), side, CELL);
-    expect(t.reversals).toBeGreaterThanOrEqual(12); expect(t.reversalsPerKm!).toBeGreaterThan(0.3); expect(t.reversalsPerKm!).toBeLessThan(0.5); expect(t.axis.L16).toBeGreaterThan(0.8); expect(t.axis.L32).toBeGreaterThan(0.6);
+    expect(t.reversals).toBeGreaterThanOrEqual(12); expect(t.teeth).toBeGreaterThanOrEqual(12); expect(t.teethPerKm!).toBeGreaterThan(0.3); expect(t.reversalsPerKm!).toBeGreaterThan(0.3); expect(t.reversalsPerKm!).toBeLessThan(0.5); expect(t.axis.L16).toBeGreaterThan(0.8); expect(t.axis.L32).toBeGreaterThan(0.6);
     const sq = coastTeeth(chainsOf(field(side, (x, y) => (x >= 100 && x < 400 && y >= 100 && y < 400 ? 50 : -50)), side), side, CELL);
-    expect(sq.corners).toBe(4); expect(sq.reversals).toBe(0);
+    expect(sq.corners).toBe(4); expect(sq.reversals).toBe(0); expect(sq.teeth).toBe(0);
     const disc = coastTeeth(chainsOf(field(side, (x, y) => (Math.hypot(x - 256, y - 256) < 150 ? 50 : -50)), side), side, CELL);
     expect(disc.reversals).toBe(0); expect(disc.corners).toBe(0);
   });
@@ -128,7 +128,11 @@ describe("coast teeth", () => {
   });
   test("a coast of wandering curves has no tooth", () => {
     const side = 512, wave = field(side, (x, y) => (y >= 256 + 40 * Math.sin(x / 40) + 15 * Math.sin(x / 13) ? 50 : -50)), t = coastTeeth(chainsOf(wave, side), side, CELL);
-    expect(t.reversals).toBe(0);
+    expect(t.reversals).toBe(0); expect(t.teeth).toBe(0);
+  });
+  test("a short-legged zigzag reverses but has no tooth of 1 km", () => {
+    const side = 512, zig = field(side, (x, y) => (y >= 200 + Math.abs(((x % 16) + 16) % 16 - 8) ? 50 : -50)), t = coastTeeth(chainsOf(zig, side), side, CELL);
+    expect(t.teeth).toBe(0);
   });
 });
 
