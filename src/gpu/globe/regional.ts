@@ -307,7 +307,7 @@ export class Regional {
   }
   creepSubs: number;
   readonly band: 0 | 1 | 2;
-  clamped = 0; // the band-limited hold: the land cells held at one unit, and the height (1/256 m) it would have taken off them, over the steps made
+  clamped = 0; // the band-limited hold: the land cells whose fall the fit asked for and the lift withheld, and the height (1/256 m) of it, over the steps made
   dropped = 0;
   stepNo = 0; // the steps made: the routing's draws are made for it
   private route: 0 | 1;

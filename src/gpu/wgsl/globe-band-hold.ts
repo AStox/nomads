@@ -218,7 +218,12 @@ fn bpsolve2(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) 
   if (p >= NP) { return; }
   bsolve_sweep(p, B_PM2, B_PM);
 }
-// every land cell rises by R m, rounded to the unit, but is held at one unit where that would take it to the sea (the shortfall is counted: the carry owes it to the next steps' loss)
+// Every land cell rises by R m, rounded to the unit, and is never lowered by it: the rise stands for rock uplift, which is not negative (dh/dt = U - K A^m S^n, U >= 0: Whipple and Tucker
+// 1999, J. Geophys. Res. 104: 17661), and a fall where the fit asks for one is a subsidence no process of the law causes. The L2 fit of a loss that is concentrated in valleys by smooth functions of
+// span 2 has negative lobes beside them (the Gibbs undershoot of a projection); applied, they sank the near-sea plain beside every valley a little each step and the cell stayed at the one-unit
+// floor, so the low land became dead flat floor (8% of the land of the K3 window, 28% at the river mouth) with the rim of the next valley left standing as a bowl, a lake of the flat plain
+// [measured: tier 4 of the K3 region, floor 7.9% of land, dead flat 6.9%, lakes 11.7% of land; with the fall withheld 0.03%, 0% and 0.2%, the land mean 10.12 and 10.17 m, and the home window's
+// mean 1233.35 and 1233.44 m]. The part withheld is counted (clamped cells, dropped height) and stays in the carry, which the next steps' fit pays back from the rises elsewhere.
 @compute @workgroup_size(256)
 fn blift(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   touch();
@@ -233,11 +238,11 @@ fn blift(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
     if (m >= 0i) { pos = add64(pos, mul64(g.w[s], u32(m))); } else { neg = add64(neg, mul64(g.w[s], u32(-m))); }
   }
   let v = add64(sub64(pos, neg), vec2u(0x80000u, 0u));
-  let rise = bitcast<i32>((v.x >> 20u) | (v.y << 12u));
+  let asked = bitcast<i32>((v.x >> 20u) | (v.y << 12u));
+  let rise = max(0i, asked);
+  if (rise != asked) { atomicAdd(&AT[A_CNT + CNT_CLAMPED], 1i); atomicAdd(&AT[A_CNT + CNT_DROPPED], rise - asked); }
   let h = e_get(E_H, k);
-  let want = h + rise;
-  let nh = max(1i, want);
-  if (nh != want) { atomicAdd(&AT[A_CNT + CNT_CLAMPED], 1i); atomicAdd(&AT[A_CNT + CNT_DROPPED], nh - want); }
+  let nh = h + rise;
   e_set(E_H, k, nh);
   let d = nh - h; let lo = d & 63i; let mid = (d >> 6u) & 63i; let hi = (d >> 12u) & 63i; let top = d >> 18u;
   for (var s = 0u; s < 9u; s++) {

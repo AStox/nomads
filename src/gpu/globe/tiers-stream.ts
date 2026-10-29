@@ -116,7 +116,7 @@ interface Progress {
   todo: number[]; sea: number[]; pending: number[]; minF: number[];
   visits: Record<string, number>; seconds: Record<string, number>; stepS: number[]; stepVisits: Record<string, number>[]; curS: number;
   calls: number; callS: number[]; exportTo: boolean;
-  clamped?: number; dropped?: number; // the band hold's land cells held at one unit, and the height (1/256 m) it would have taken off them, over the steps made
+  clamped?: number; dropped?: number; // the band hold's land cells whose fall the fit asked for and the lift withheld, and the height (1/256 m) of it, over the steps made
 }
 interface Ring { halo: Int32Array; hid: Int32Array; hreg: Int32Array; adj: Int32Array; inner: Int32Array; across: Map<number, number> }
 
