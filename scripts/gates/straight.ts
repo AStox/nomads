@@ -419,7 +419,7 @@ export function exactRuns(mask: Uint8Array, side: number, ox: number, oy: number
 // teeth        the shore's corners: the chain's cells at every TOOTH_STRIDE-th cell make a polygon; a vertex whose chords turn by TOOTH_TURN degrees or more is a corner (consecutive vertices turning the same
 //              way are one corner: a 90 degree corner met between two vertices shows as two turns that sum to 90). A reversal is a corner whose turn is the other way from the corner before it on the
 //              same chain (a closed chain compares the last with the first): a sawtooth reverses at every tooth, a square island or a disc never (all its corners turn one way). `reversalsPerKm` per km of
-//              chain (cells x cell width). A staircase of one-cell steps along a diagonal has no corner at that stride; the lattice-diagonal and lattice-axis runs of 8, 16 and 32 cells are in `diag`
+//              chain (cells x cell width); a tooth is a reversal whose leg between the two corners is 1 km (ceil(1000 / cell width) cells) or more: a square-cornered step with a straight side, `teethPerKm`. A staircase of one-cell steps along a diagonal has no corner at that stride; the lattice-diagonal and lattice-axis runs of 8, 16 and 32 cells are in `diag`
 //              and `axis` (the shares of the chain's cells in a run, as shoreRuns). In the page's view the two lattice axes are the two screen diagonals.
 // patches      a patch is a 4-connected component of 64 cells or more that does not meet the block's edge: a lake (flooded), an inland sea-level pit (sea cells that the sea does not reach inside the
 //              block), a lake of the file's flooded plane, a tree-cover patch (tree share of 0.5 or more on land). Per set: `straight` = the share of the patches' boundary cells that lie in a run of
@@ -429,10 +429,12 @@ export function exactRuns(mask: Uint8Array, side: number, ox: number, oy: number
 //              corners (as for the shore, stride 4 cells) of a patch, and `squared` = the share of patches with fillObb of 0.85 or more and 3 corners or more (a raster rectangle has 4, a disc 0).
 export const TOOTH_STRIDE = 6, TOOTH_TURN = 45, PATCH_STRIDE = 4, PATCH_MIN = 64, SQUARED_FILL = 0.85;
 export interface Shares3 { L8: number; L16: number; L32: number }
-export interface Teeth { cells: number; km: number; corners: number; reversals: number; reversalsPerKm: number | null; axis: Shares3; diag: Shares3 }
+export interface Teeth { cells: number; km: number; corners: number; reversals: number; reversalsPerKm: number | null; teeth: number; teethPerKm: number | null; axis: Shares3; diag: Shares3 }
 
-// Corners of each chain, in order, as the sign of their turn (+1 / -1): vertices every `stride` cells, a vertex turning `turn` degrees or more, consecutive vertices of one sign merged.
-function chainCorners(ch: Chains, side: number, stride: number, turn: number): number[][] {
+// Corners of each chain, in order, as the sign of their turn (+1 / -1) and the chain index where it is met: vertices every `stride` cells, a vertex turning `turn` degrees or more, consecutive
+// vertices of one sign merged (the corner is at the first of them).
+interface Corner { sign: number; at: number }
+function chainCorners(ch: Chains, side: number, stride: number, turn: number): Corner[][] {
   return ch.seq.map((cells, q) => {
     const n = cells.length, closed = ch.closed[q] && n >= 3 * stride, nv = Math.floor(n / stride);
     if (nv < 3) return [];
@@ -443,19 +445,26 @@ function chainCorners(ch: Chains, side: number, stride: number, turn: number): n
       const ang = (Math.atan2(ax * by - ay * bx, ax * bx + ay * by) * 180) / Math.PI;
       signs.push(Math.abs(ang) >= turn ? Math.sign(ang) : 0);
     }
-    const out: number[] = [];
-    for (let i = 0; i < signs.length; i++) if (signs[i] !== 0 && !(out.length && signs[i - 1] === signs[i])) out.push(signs[i]);
-    if (closed && out.length > 1 && signs[0] === signs[signs.length - 1] && signs[0] !== 0) out.pop(); // the first and last vertex are one corner
+    const first = closed ? 0 : 1, out: Corner[] = [];
+    for (let i = 0; i < signs.length; i++) if (signs[i] !== 0 && !(i > 0 && signs[i - 1] === signs[i])) out.push({ sign: signs[i], at: (first + i) * stride });
+    if (closed && out.length > 1 && signs[0] === signs[signs.length - 1] && signs[0] !== 0) out.shift(); // the first and last vertex are one corner
     return out;
   });
 }
-function reversalsOf(corners: number[][], ch: Chains): number {
-  let r = 0;
+// The reversals (a corner turning the other way from the one before it) and the teeth: reversals whose leg between the two corners is `leg` cells or more.
+function reversalsOf(corners: Corner[][], ch: Chains, leg: number): { reversals: number; teeth: number } {
+  let reversals = 0, teeth = 0;
   corners.forEach((c, q) => {
-    for (let i = 1; i < c.length; i++) if (c[i] !== c[i - 1]) r++;
-    if (ch.closed[q] && c.length > 2 && c[0] !== c[c.length - 1]) r++;
+    const n = ch.seq[q].length;
+    for (let i = 1; i <= c.length; i++) {
+      if (i === c.length && !(ch.closed[q] && c.length > 2)) break;
+      const a = c[i - 1], b = c[i % c.length];
+      if (a.sign === b.sign) continue;
+      reversals++;
+      if (((b.at - a.at) % n + n) % n >= leg) teeth++;
+    }
   });
-  return r;
+  return { reversals, teeth };
 }
 
 export function coastTeeth(ch: Chains, side: number, cellM: number): Teeth {
@@ -465,8 +474,8 @@ export function coastTeeth(ch: Chains, side: number, cellM: number): Teeth {
   const cells = [...seen], N = Math.max(1, cells.length), km = (cells.length * cellM) / 1000;
   const share = (dirs: number[], li: number) => { let c = 0; for (const k of cells) for (const di of dirs) if (marks[k] & ((1 << (di * lens.length + li)) >>> 0)) { c++; break; } return r4(c / N); };
   const set = (dirs: number[]): Shares3 => ({ L8: share(dirs, 0), L16: share(dirs, 1), L32: share(dirs, 2) });
-  const corners = chainCorners(ch, side, TOOTH_STRIDE, TOOTH_TURN), nc = corners.reduce((t, c) => t + c.length, 0), rev = reversalsOf(corners, ch);
-  return { cells: cells.length, km: r4(km), corners: nc, reversals: rev, reversalsPerKm: km > 0 ? r4(rev / km) : null, axis: set([0, 1]), diag: set([2, 3]) };
+  const corners = chainCorners(ch, side, TOOTH_STRIDE, TOOTH_TURN), nc = corners.reduce((t, c) => t + c.length, 0), { reversals, teeth } = reversalsOf(corners, ch, Math.ceil(1000 / cellM));
+  return { cells: cells.length, km: r4(km), corners: nc, reversals, reversalsPerKm: km > 0 ? r4(reversals / km) : null, teeth, teethPerKm: km > 0 ? r4(teeth / km) : null, axis: set([0, 1]), diag: set([2, 3]) };
 }
 
 interface Quant { median: number; mean: number; share90: number }
