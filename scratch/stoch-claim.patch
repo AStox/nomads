@@ -1,0 +1,66 @@
+diff --git a/src/gpu/globe/tectonics.ts b/src/gpu/globe/tectonics.ts
+index 6e8c794..ac616ad 100644
+--- a/src/gpu/globe/tectonics.ts
++++ b/src/gpu/globe/tectonics.ts
+@@ -921,9 +921,9 @@ export class Tectonics {
+     this.enc!.clearBuffer(this.A, 0, ACCF.COUNT * this.fw * 4);
+     this.rec("elev", {}, n);
+     this.regionalSweeps(n);
+-    this.rec("claim", { 22: regionalField(sw.regional) }, n);
+-    this.rec("deposit", {}, n);
+-    this.rec("resolve", {}, n);
++    this.rec("claim", { 22: regionalField(sw.regional), 21: this.stepNo }, n);
++    this.rec("deposit", { 21: this.stepNo }, n);
++    this.rec("resolve", { 21: this.stepNo }, n);
+     for (let s = 0; s < sw.gap; s++) this.rec("gapfill", { 16: s % 2 === 0 ? FLD.PL : FLD.PL2, 17: s % 2 === 0 ? FLD.PL2 : FLD.PL, 18: s }, n);
+     for (let s = 0; s < sw.smooth; s++) this.rec("plateSmooth", { 16: s % 2 === 0 ? FLD.PL : FLD.PL2, 17: s % 2 === 0 ? FLD.PL2 : FLD.PL }, n);
+     this.rec("distInit", {}, n);
+diff --git a/src/gpu/wgsl/globe-tectonics.ts b/src/gpu/wgsl/globe-tectonics.ts
+index 2f072e5..1eef070 100644
+--- a/src/gpu/wgsl/globe-tectonics.ts
++++ b/src/gpu/wgsl/globe-tectonics.ts
+@@ -31,7 +31,7 @@ export const FLD = { VB: 0, VS: 1, VM: 2, VG: 3, VV: 4, AGB: 5, ORG: 6, PL: 7, Z
+ // Fields of A (the atomic accumulators): coverage, the two rank keys, the winner plate's coverage, then the winner plate's and the other plates' seven
+ // extensive sums. The flux counters follow the fields (28 words: seven fluxes of four 8-bit limbs). STACK is no source or sink: the crust an
+ // overlap stacked on the winner's columns, which the wedge then spreads.
+-export const ACCF = { COV: 0, KR: 1, KC: 2, COVW: 3, W: 4, L: 11, COUNT: 18 } as const;
++export const ACCF = { COV: 0, KR: 1, KC: 2, COVW: 3, W: 4, L: 11, PC: 18, COUNT: 28 } as const;
+ export const FLUX = { NEW: 0, SUB: 1, ARC: 2, HOT: 3, PEL: 4, TRIM: 5, STACK: 6, COUNT: 7 } as const;
+ export const NEXT = 7; // extensive fields: the five volumes, AGB, ORG
+ 
+@@ -147,7 +147,7 @@ const CORNER = ${L.corner}u; const CD = ${CORNER.D}u; const CK = ${CORNER.K}u; c
+ const F_VB = ${FLD.VB}u; const F_AGB = ${FLD.AGB}u; const F_ORG = ${FLD.ORG}u; const F_PL = ${FLD.PL}u; const F_Z = ${FLD.Z}u;
+ const F_ZR = ${FLD.ZR}u; const F_SUB = ${FLD.SUB}u; const F_DIST = ${FLD.DIST}u; const F_DIST2 = ${FLD.DIST2}u; const F_PL2 = ${FLD.PL2}u; const F_E2 = ${FLD.E2}u; const F_VR = ${FLD.VR}u;
+ const ACC_COVW = ${ACCF.COVW}u; const ACC_COV = ${ACCF.COV}u; const ACC_KR = ${ACCF.KR}u; const ACC_KC = ${ACCF.KC}u; const ACC_W = ${ACCF.W}u; const ACC_L = ${ACCF.L}u;
+-const ACC_COUNT = ${ACCF.COUNT}u;
++const ACC_COUNT = ${ACCF.COUNT}u; const ACC_PC = ${ACCF.PC}u;
+ const FLUX_TRIM = ${FLUX.TRIM}u; const FLUX_NEW = ${FLUX.NEW}u; const FLUX_SUB = ${FLUX.SUB}u; const FLUX_ARC = ${FLUX.ARC}u; const FLUX_HOT = ${FLUX.HOT}u; const FLUX_PEL = ${FLUX.PEL}u; const FLUX_STACK = ${FLUX.STACK}u;
+ 
+ fn touch() {
+@@ -352,6 +352,7 @@ fn claim(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
+     let cv = (a * w + 32768u) >> 16u;
+     let d = hc[k];
+     atomicAdd(&A[wordOf(ACC_COV, d)], cv);
++    atomicAdd(&A[wordOf(ACC_PC + p, d)], cv);
+     if (cv >= RANK_MIN) { atomicMax(&A[wordOf(ACC_KR, d)], (rank << 8u) | p); }
+     if (cv >= CLAIM_MIN) { atomicMax(&A[wordOf(ACC_KC, d)], (cv << 8u) | p); }
+   }
+@@ -362,7 +363,17 @@ fn claim(@builtin(global_invocation_id) gid: vec3u, @builtin(num_workgroups) nwg
+ fn winnerOf(d: Src, ad: u32, cov: u32) -> u32 {
+   let over = cov * 16u > ad * ${PHYS.OVER_NUM}u;
+   let key = select(atomicLoad(&A[wordOf(ACC_KC, d)]), atomicLoad(&A[wordOf(ACC_KR, d)]), over);
+-  return select(NONE, key & 255u, key != 0u);
++  if (over || key == 0u || cov == 0u) { return select(NONE, key & 255u, key != 0u); }
++  // Not an overlap: the cell goes to a plate with the probability of that plate's coverage of it (the draw keyed by the cell and the step), so that a boundary moves by the mean of the sub-cell displacement.
++  var h = (d.face * FN * FN + d.y * FN + d.x) * 2654435761u + P[21] * 40503u + 12345u;
++  h = (h ^ (h >> 15u)) * 2246822519u; h = (h ^ (h >> 13u)) * 3266489917u; h = h ^ (h >> 16u);
++  var r = h % cov;
++  for (var q = 0u; q < NP; q++) {
++    let cq = atomicLoad(&A[wordOf(ACC_PC + q, d)]);
++    if (r < cq) { return q; }
++    r = r - cq;
++  }
++  return key & 255u;
+ }
+ 
+ // Pass two: every parcel shares each of its seven extensive fields among its four cells, into the winner plate's sums or
