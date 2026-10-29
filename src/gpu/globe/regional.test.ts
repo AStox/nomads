@@ -172,7 +172,7 @@ describe("the carry's sea-level limiter", () => {
   const fn0 = 256, fn1 = 2 * fn0, at = (f: number, X: number, Y: number) => (f * fn0 + Y) * fn0 + X;
   const rough = (offset: number, scale: number) => { const a = new Int32Array(N0); for (let i = 0; i < N0; i++) a[i] = Math.round((((Math.imul(i, 2654435761) >>> 8) % 4001) - 2000) * scale) + offset; return a; };
   const kids = (fine: Int32Array, f: number, X: number, Y: number) => { const o = (f * fn1 + 2 * Y) * fn1 + 2 * X; return [fine[o], fine[o + 1], fine[o + fn1], fine[o + fn1 + 1]]; };
-  test("the children sum to four times the parent, and no child leaves the sea level's side where all nine parents are on it", () => {
+  test("the children sum to four times the parent, and no child leaves the sea level's side where its parent and the two parents that share an edge with it are on it", () => {
     // rough fields: mostly sea, mostly land, and one lying wholly on land, with cliffs of hundreds of metres between neighbours
     for (const parent of [rough(-120 * 256, 32), rough(120 * 256, 32), rough(900 * 256, 128)]) {
       const fine = refineSmooth(parent, 0);
@@ -180,16 +180,27 @@ describe("the carry's sea-level limiter", () => {
       for (let f = 0; f < FACES; f++)
         for (let Y = 1; Y < fn0 - 1; Y++)
           for (let X = 1; X < fn0 - 1; X++) {
-            const k = kids(fine, f, X, Y);
-            if (k[0] + k[1] + k[2] + k[3] !== parent[at(f, X, Y)] * 4) missed++;
-            let lo = Infinity, hi = -Infinity;
-            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const v = parent[at(f, X + dx, Y + dy)]; lo = Math.min(lo, v); hi = Math.max(hi, v); }
-            if (lo > 0) { limited++; for (const c of k) if (c <= 0) strayed++; } else if (hi < 0) { limited++; for (const c of k) if (c > 0) strayed++; }
+            const k = kids(fine, f, X, Y), own = parent[at(f, X, Y)];
+            if (k[0] + k[1] + k[2] + k[3] !== own * 4) missed++;
+            for (let c = 0; c < 4; c++) {
+              const sx = parent[at(f, X + (c & 1 ? 1 : -1), Y)], sy = parent[at(f, X, Y + (c & 2 ? 1 : -1))];
+              if (own > 0 && sx > 0 && sy > 0) { limited++; if (k[c] <= 0) strayed++; } else if (own < 0 && sx < 0 && sy < 0) { limited++; if (k[c] > 0) strayed++; }
+            }
           }
       expect(missed).toBe(0);
       expect(strayed).toBe(0);
       expect(limited, `offset ${parent[0]}`).toBeGreaterThan(0);
     }
+  });
+  test("a parent that touches the sea across a corner only has no child in the sea", () => {
+    // a land cell of 1 m with a 750 m column beside it and a sea cell at its south-west corner: the unlimited carry digs the child below the sea there
+    const parent = new Int32Array(N0).fill(256);
+    const c = (X: number, Y: number) => at(2, X, Y);
+    parent[c(100, 100)] = 256; parent[c(99, 100)] = 750 * 256; parent[c(99, 99)] = -3 * 256; parent[c(98, 99)] = -20 * 256; parent[c(98, 100)] = 10 * 256; parent[c(100, 99)] = 120;
+    const fine = refineSmooth(parent, 0);
+    const k = kids(fine, 2, 100, 100);
+    for (const v of k) expect(v).toBeGreaterThan(0);
+    expect(k[0] + k[1] + k[2] + k[3]).toBe(256 * 4);
   });
   test("a strict peak and a strict pit keep a sub-cell shape: no block of four equal children where the neighbours differ", () => {
     const parent = rough(900 * 256, 256);

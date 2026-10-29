@@ -131,32 +131,37 @@ function children2(parent: ArrayLike<number>, from: number, out: Float64Array, a
     }
   }
 }
-// The carry's one limiter: the four children `w` of a cell (whole 1/256 m units, the bilinear children carried and rounded) with the parent's total `sum4` (4 times the parent). A mean-preserving carry of
-// a step rings (a trench of sea under land parents beside a 750 m cliff: the sea strips and ponds of the tier-3 pictures), and nothing but the sea level says such a child is wrong. So where all nine
-// parents of the 3 x 3 are land (`lo` > 0, the least of them) and a child is not, or all are sea (`hi`, the greatest, at most 0) and a child is land, the children are scaled toward their mean, w' = mean +
-// theta (w - mean), by the largest theta that keeps them one unit on their parents' side of the sea level (Zhang and Shu 2010, J. Comput. Phys. 229: 3091, the scaling of a reconstruction toward the cell
-// mean to keep it inside a bound; Zhang and Shu 2011, Proc. R. Soc. A 467: 2752, the same for positivity), and the mean is restored among the children that can still move; everywhere else the carry is free
-// (a coast moves inside the cells that hold it, a strict peak keeps a sub-cell crest). A box on the parents' range (Barth and Jespersen 1989) was tried first: at a strict extremum of the 3 x 3 the box is the
-// parent's own value, so all four children are equal, and a constant block carried down is a constant 4 x 4, 8 x 8 (a flat square of the tier-0 cell's footprint at every peak and pit), and a plain next
-// to a cliff stayed on the tier-0 cell's edge. Integers in, integers out.
-export function limitSea(w: number[], sum4: number, lo: number, hi: number) {
-  const land = lo > 0 && sum4 >= 4, sea = !land && hi <= 0 && sum4 <= -4, mean = sum4 / 4;
-  let L = -Infinity, H = Infinity;
-  if (land || sea) {
-    const m = Math.min(w[0], w[1], w[2], w[3]), M = Math.max(w[0], w[1], w[2], w[3]);
-    if (land) { L = 1; if (m < 1) { const theta = (mean - 1) / (mean - m); for (let k = 0; k < 4; k++) w[k] = Math.round(mean + theta * (w[k] - mean)); } }
-    else { H = -1; if (M > -1) { const theta = (-1 - mean) / (M - mean); for (let k = 0; k < 4; k++) w[k] = Math.round(mean + theta * (w[k] - mean)); } }
+// The carry's one limiter: the four children `w` (order SW, SE, NW, NE; whole 1/256 m units, the bilinear children carried and rounded) of a cell of height `own` with the parent's total `sum4` (4 times the
+// parent), and the parents `west`, `east`, `south`, `north` that share an edge with it. A mean-preserving carry of a step rings (a trench of sea under land parents beside a cliff: the sea strips and ponds
+// of the tier-3 pictures; beside a lone 14 m column on a 1 m plain it digs 2.5 m below the sea on both sides, a sea pit of 700 tier-5 cells inside the land), and nothing but the sea level says such a child is
+// wrong. So a child of a land parent whose two edge-sharing parents (the one on its x side and the one on its y side) are land too is held one unit above the sea, and a child of a sea parent whose two are sea
+// one unit below it: the children are scaled toward their mean, w' = mean + theta (w - mean), by the largest theta that keeps those children on their parents' side (Zhang and Shu 2010, J. Comput. Phys.
+// 229: 3091, the scaling of a reconstruction toward the cell mean to keep it inside a bound; Zhang and Shu 2011, Proc. R. Soc. A 467: 2752, the same for positivity), and the mean is restored among the
+// children that can still move. A parent that only touches the sea across a corner lets none of its children go to the sea: the sea of the next tier keeps the edge adjacency of the tier above (with all
+// nine parents as the stencil, as first built, a sea parent at a corner of the 3 x 3 freed every child of the cell, and 9 to 15 sea pits of about 700 cells stood in each 640 by 640 window of the
+// river, shelf and K3 places [measured, scratch pits5.ts]; with the edge stencil 0 to 1 of 2 to 8 cells). A coast still moves inside the cells that share an edge with the sea, a strict peak keeps a
+// sub-cell crest. A box on the parents' range (Barth and Jespersen 1989) was tried first: at a strict extremum of the 3 x 3 the box is the parent's own value, so all four children are equal, and a
+// constant block carried down is a constant 4 x 4, 8 x 8 (a flat square of the tier-0 cell's footprint at every peak and pit). Integers in, integers out.
+const LIM_LO = new Float64Array(4), LIM_HI = new Float64Array(4);
+export function limitSea(w: number[], sum4: number, own: number, west: number, east: number, south: number, north: number) {
+  const land = own > 0 && sum4 >= 4, sea = !land && own <= 0 && sum4 <= -4, mean = sum4 / 4;
+  let theta = 1;
+  for (let k = 0; k < 4; k++) {
+    const sx = k & 1 ? east : west, sy = k & 2 ? north : south;
+    LIM_LO[k] = -Infinity; LIM_HI[k] = Infinity;
+    if (land && sx > 0 && sy > 0) { LIM_LO[k] = 1; if (w[k] < 1) theta = Math.min(theta, (mean - 1) / (mean - w[k])); }
+    else if (sea && sx <= 0 && sy <= 0) { LIM_HI[k] = -1; if (w[k] > -1) theta = Math.min(theta, (-1 - mean) / (w[k] - mean)); }
   }
-  const free = [false, false, false, false];
+  if (theta < 1) for (let k = 0; k < 4; k++) w[k] = Math.round(mean + theta * (w[k] - mean));
   let sum = 0;
-  for (let k = 0; k < 4; k++) { w[k] = Math.min(H, Math.max(L, w[k])); sum += w[k]; }
+  for (let k = 0; k < 4; k++) { w[k] = Math.min(LIM_HI[k], Math.max(LIM_LO[k], w[k])); sum += w[k]; }
   for (let d = sum4 - sum; d !== 0; ) {
     let nf = 0;
-    for (let k = 0; k < 4; k++) { free[k] = d > 0 ? w[k] < H : w[k] > L; if (free[k]) nf++; }
+    for (let k = 0; k < 4; k++) if (d > 0 ? w[k] < LIM_HI[k] : w[k] > LIM_LO[k]) nf++;
     if (nf === 0) break;
     const q = Math.floor(d / nf), rem = d - q * nf;
     let at = 0, moved = 0;
-    for (let k = 0; k < 4; k++) if (free[k]) { const nw = Math.min(H, Math.max(L, w[k] + q + (at++ < rem ? 1 : 0))); moved += nw - w[k]; w[k] = nw; }
+    for (let k = 0; k < 4; k++) if (d > 0 ? w[k] < LIM_HI[k] : w[k] > LIM_LO[k]) { const nw = Math.min(LIM_HI[k], Math.max(LIM_LO[k], w[k] + q + (at++ < rem ? 1 : 0))); moved += nw - w[k]; w[k] = nw; }
     d -= moved;
   }
 }
@@ -184,14 +189,10 @@ export function refineSmooth(parent: ArrayLike<number>, from: number, passes = 4
       for (let X = 0; X < fnp; X++) {
         const p = f * cells + Y * fnp + X, o = (f * fn + 2 * Y) * fn + 2 * X, v = [Math.round(c[o]), Math.round(c[o + 1]), Math.round(c[o + fn]), Math.round(c[o + fn + 1])];
         if (passes > 0) {
-          let lo = parent[p], hi = lo;
-          if (X > 0 && X < fnp - 1 && Y > 0 && Y < fnp - 1) {
-            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const u = parent[p + dy * fnp + dx]; if (u < lo) lo = u; if (u > hi) hi = u; }
-          } else {
-            around3(gp, f, X, Y, ids);
-            for (let k = 0; k < 9; k++) if (ids[k] >= 0) { const u = parent[ids[k]]; if (u < lo) lo = u; if (u > hi) hi = u; }
-          }
-          limitSea(v, Math.round(parent[p] * 4), lo, hi);
+          let west: number, east: number, south: number, north: number;
+          if (X > 0 && X < fnp - 1 && Y > 0 && Y < fnp - 1) { west = parent[p - 1]; east = parent[p + 1]; south = parent[p - fnp]; north = parent[p + fnp]; }
+          else { around3(gp, f, X, Y, ids); south = parent[ids[1]]; west = parent[ids[3]]; east = parent[ids[5]]; north = parent[ids[7]]; }
+          limitSea(v, Math.round(parent[p] * 4), parent[p], west, east, south, north);
           out[o] = v[0]; out[o + 1] = v[1]; out[o + fn] = v[2]; out[o + fn + 1] = v[3];
           continue;
         }
