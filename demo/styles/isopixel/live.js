@@ -413,28 +413,41 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   }
   // The lattice the planet camera draws with. latticeAt's is a face's, and where the target crosses a cube edge out of a window's reach the cells of the two faces lie at an angle to each other
   // (47 degrees at 9 degrees from a corner, none at an edge's middle; a cube's square lattice has eight cone points, so no picture that follows the lattice can turn the same way everywhere),
-  // so the picture would turn by all of it in one frame. The camera's lattice follows the exact one with time constant LAT_TAU, once a frame (latTick), and is the exact one where sprites show,
-  // which stand in it (the window's cover), so the ladder and the planet under it always agree and nothing else changes: with the target in one face the two are the same.
-  // [design: 350 ms, a quarter turn in about a third of a second, as the camera's Q and E and planet.js's level rise]
-  const LAT_TAU = 350, WIN_COVER = (view) => (mode === "win" && !simOpts ? winFade() * Math.min(1, LIFT_PER_COVER * coverFade(view)) : 1), LAT_COVER = (view) => (simOpts ? 1 : mode === "win" ? WIN_COVER(view) : 0);
+  // so the picture would turn by all of it in one frame. The camera's lattice follows the exact one by the target's travel (latTick, once a frame, an e-fold in LAT_PX of the picture's px), and is the exact one where
+  // sprites show, which stand in it (the window's cover), so the ladder and the planet under it always agree and nothing else changes: with the target in one face the two are the same. It follows the camera's
+  // motion and not the clock: a glide that outlasted a drag turned the picture for a second after the hand let go (276 px of the held ground at a cube corner), and what is left at a standstill stays until the camera moves again.
+  // [design: 80 px, a drag of 320 px (a fast flick) leaves 2 percent of a turn, and the turn is at most 0.6 degrees a px at the largest kink (47 degrees)]
+  const LAT_PX = 80;
+  const WIN_COVER = (view) => (mode === "win" && !simOpts ? winFade() * Math.min(1, LIFT_PER_COVER * coverFade(view)) : 1), LAT_COVER = (view) => (simOpts ? 1 : mode === "win" ? WIN_COVER(view) : 0);
   // a target that jumps (a teleport, a bookmark, a search) is a new picture, not a camera moving on: the lattice of the place it left would glide into the new one's for ten time constants, and the sea's waves, which
   // stand in it, slide the whole time [design: a quarter radian, 98 km on a 391 km planet and well past what a frame of a drag or a fly covers]
   const LAT_JUMP = 0.25;
-  let latS = null, latAt = 0, latFrom = null;
+  let latS = null, latFrom = null;
   function latTick(view) {
-    if (!PLACE || !view.geo) return;
-    const T = latticeAt(view.geo), now = performance.now(), v = vecOf(view.geo), jumped = latFrom && Math.acos(Math.min(1, dotv(v, latFrom))) > LAT_JUMP;
+    if (!PLACE || !view.geo) return false;
+    const T = latticeAt(view.geo), v = vecOf(view.geo), jumped = latFrom && Math.acos(Math.min(1, dotv(v, latFrom))) > LAT_JUMP, px = latS && latFrom ? travelPx(view, latFrom) : 0;
     latFrom = v;
-    if (!latS || !T.q || jumped) { latS = { sc: T.sc, turn: T.turn, q: T.q && [...T.q] }; latAt = now; return; }
-    const a = 1 - Math.exp(-Math.min(1000, now - latAt) / LAT_TAU);
-    latAt = now;
-    latS.turn += (((T.turn - latS.turn + 3 * Math.PI) % TAU) - Math.PI) * a;
-    latS.sc += (T.sc - latS.sc) * a;
-    latS.q = latS.q.map((v, i) => v + (T.q[i] - v) * a);
+    if (!latS || !T.q || jumped) { latS = { sc: T.sc, turn: T.turn, q: T.q && [...T.q] }; return true; }
+    // where the exact lattice is drawn whole (a window's cover of 1) the eased one is not seen: it is the exact one, so a window lost later gives the picture back as it stands
+    const a = LAT_COVER(view) >= 1 ? 1 : 1 - Math.exp(-px / LAT_PX), dt = (((T.turn - latS.turn + 3 * Math.PI) % TAU) - Math.PI) * a;
+    const dq = latS.q.map((v, i) => (T.q[i] - v) * a), ds = (T.sc - latS.sc) * a;
+    latS.turn += dt;
+    latS.sc += ds;
+    latS.q = latS.q.map((v, i) => v + dq[i]);
+    // whether the picture moved by it, for a hold to be solved again: the steps are radians and ratios, at most half a screen's diagonal from the target, and are seen only as far as the look is parallel
+    return a < 1 && (Math.abs(dt) + Math.abs(ds) + dq.reduce((m, x) => m + Math.abs(x), 0)) * canvas.width * smooth(ZLAD - 1.5, ZLAD, view.zoom) > SEEN_PX;
   }
-  // the lattice moves once a frame; a camera that holds ground by it moves it first, so the hold is solved for the picture drawn, and the frame then takes it as it is
+  // how far the target has gone on the screen since it stood at unit vector v0, in px, as the camera draws it now (a place the camera cannot show counts as a jump)
+  function travelPx(view, v0) {
+    const cam = planetCamOf(view), a = cam.project(v0), b = cam.project(vecOf(view.geo));
+    return a && b ? Math.hypot(a[0] - b[0], a[1] - b[1]) : Infinity;
+  }
+  // the lattice moves once a frame; a camera that holds ground by it moves it once the hold has moved the target (the step is the travel of that frame, so a camera that stops does not step again) and solves the hold
+  // again for it, so the hold is solved for the picture drawn, and the frame then takes it as it is. True if the lattice moved.
   let latPre = false;
-  function tickLattice(view) { latTick(view); headAt = performance.now(); latPre = true; }
+  function tickLattice(view) { const moved = latTick(view), lifted = liftTick(view); headMove.seen(view); latPre = true; return moved || lifted; }
+  // the target as the hold solved it again for those steps is where the camera stands: the small move that made is not travel to step the lattice, the lift and the roll by, or a camera that stops would step once more
+  function camSeen(view) { if (view.geo) latFrom = vecOf(view.geo); headMove.seen(view); liftMove.seen(view); }
   // North up cannot always be held by a drag. At a pole north turns by half a turn as the target crosses it, and near the planet's edge a place cannot be shown where the cursor is with north up
   // (at the screen's middle row it is on no target's east or north unless it stands within the colatitude of the place from the target): the answer was a target on the far side of the planet, and a few px of
   // mouse moved the whole picture by hundreds. So a hold turns the sphere as a hand does (the turn that takes the place under the cursor to the grabbed place), the camera with it: screen up is the compass
@@ -463,13 +476,23 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     h.hd = hdOf(h, turned(ax.map((v) => v / s), dotv(T0, T1), s, upOf(g0)));
     return h;
   }
-  let headAt = 0;
+  // the roll walks back to north up only as the camera moves (the target's travel and a zoom's step, in px), as the lattice does, so a released drag leaves the picture where it is
+  // [design: 250 px an e-fold, a 350 ms time constant at the 700 px/s of a hand's drag; a zoom unit counts as ZOOM_PX px, about half a screen of the picture's scale change]
+  const HD_PX = 250, ZOOM_PX = 400;
+  // a step of the lattice or the lift that moves the picture by less than this is not solved for again [design: a twentieth of a px, under what the picture's px can show]
+  const SEEN_PX = 0.05;
+  // what the camera has moved since it was last asked, in px: the target's travel as drawn plus a zoom's step
+  const mover = () => {
+    let from = null, zoom = null;
+    const seen = (view) => { from = view.geo ? vecOf(view.geo) : null; zoom = view.zoom; };
+    return { seen, step: (view) => { const px = (from && view.geo ? travelPx(view, from) : 0) + (zoom == null ? 0 : Math.abs(view.zoom - zoom) * ZOOM_PX); seen(view); return px; } };
+  };
+  const headMove = mover();
   function headTick(view) {
-    const now = performance.now(), dt = Math.min(1000, now - headAt), g = view.geo;
-    headAt = now;
+    const g = view.geo, px = headMove.step(view);
     if (!g.hd) return;
     const rate = smooth(ZLAD - 1.5, ZLAD, view.zoom), d = ((g.hd + 3 * Math.PI) % TAU) - Math.PI;
-    g.hd = Math.abs(d) < 1e-4 ? 0 : d * Math.exp((-dt * rate) / LAT_TAU);
+    g.hd = Math.abs(d) < 1e-4 ? 0 : d * Math.exp((-px * rate) / HD_PX);
   }
   function latOf(view) {
     const T = latticeAt(view.geo);
@@ -478,13 +501,9 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const c = LAT_COVER(view), S = latS;
     return { sc: S.sc + (T.sc - S.sc) * c, turn: S.turn + (((T.turn - S.turn + 3 * Math.PI) % TAU) - Math.PI) * c, q: S.q.map((v, i) => v + (T.q[i] - v) * c) };
   }
-  // whether the picture still changes of itself with the camera standing still: the cells' lattice easing to its place's (only where the picture is drawn by the eased one), a window on its way or fading in, the planet's tiles arriving
-  function moving(view) {
-    if (quietDone < 3 || winFade() < 1 || (asked && asked.t > groundAt)) return true;
-    if (view.geo?.hd && view.zoom > ZLAD - 1.5) return true;
-    if (!PLACE || !view.geo || !latS || LAT_COVER(view) >= 1) return false;
-    const T = latticeAt(view.geo), S = latS;
-    return !!T.q && (Math.abs(((T.turn - S.turn + 3 * Math.PI) % TAU) - Math.PI) > 5e-5 || Math.abs(T.sc / S.sc - 1) > 5e-5 || T.q.some((v, i) => Math.abs(v - S.q[i]) > 5e-5));
+  // whether the picture still changes of itself with the camera standing still: a window on its way or fading in, the planet's tiles arriving
+  function moving() {
+    return quietDone < 3 || winFade() < 1 || !!(asked && asked.t > groundAt);
   }
   // the planet camera's look at a zoom: u runs from the whole planet (0) to the ladder's first zoom (1)
   function planetParams(view) {
@@ -507,25 +526,53 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
   const planetCamOf = (view, lift = stats.lift ?? 0) => { const p = planetParams(view); return planetCam({ ...p, w: canvas.width, h: canvas.height, radiusM: PR, lift }); };
   // The lift a frame is drawn at is the page's to name. It is the height of the point the camera turns about, so a lift off by dL shifts the whole picture by dL times the pixels a metre, a held point with it, and the
   // worker's own (worker.js: the planet's height over a box the view's size, `pyr`, eased into the window's ground under the target as the window's cover grows) is known to the page only from frames drawn a few
-  // frames ago, while it moves by tens of metres a frame in a wheel zoom and by kilometres where a window's cover grows. So the page makes the lift from the last pyr the worker answered (liftLatch, taken once a frame,
-  // after the frame is made: the holds solved before a frame and the frame use one value), solves its holds for that lift, and sends it for the worker to draw with: a held point is then where it was solved to be whatever
+  // frames ago, while it moves by tens of metres a frame in a wheel zoom and by kilometres where a window's cover grows. So the page makes the lift from the last pyr the worker answered (liftLatch, moved once a frame
+  // by the travel the frame's camera made, before the frame is made: the holds solved for it and the frame use one value), solves its holds for that lift, and sends it for the worker to draw with: a held point is then where it was solved to be whatever
   // the worker's pyr did meanwhile, which it answers for the next frame.
-  // The pyr the page uses eases to the worker's with time constant LIFT_TAU: it changes by tens of metres a frame as the target crosses relief and tiles arrive, and a held point solved for each jump moves the target by
-  // as much as the jump is worth in pixels (a lurch in a drag over a mountain); the lift need only stand above the ground, which an average over the view's box does within the relief it smooths.
-  // [design: 350 ms, as LAT_TAU, the lattice's glide]
+  // The pyr the page uses follows the worker's by the camera's motion (the target's travel and a zoom's step in px, an e-fold in LIFT_PX): it changes by tens of metres a frame as the target crosses relief, and a held point solved
+  // for each jump moves the target by as much as the jump is worth in pixels (a lurch in a drag over a mountain); the lift need only stand above the ground, which an average over the view's box does within the relief it smooths.
+  // It must not follow the clock: the worker answers a frame or more behind the target, so at the end of a drag the lift lags the pyr of the place it stopped at by the pyr's slope over that lag, and time took it there in about a second
+  // while the hand was off the mouse and the picture slid (28 px of the held ground at a cube corner, zoom 1.8). What the camera has not moved to stays where it is until it moves again. What the worker's pyr changes at one place and view
+  // (tiles arriving) is new data, not lag: it passes into the lift with time constant LIFT_TAU.
+  // [design: 250 px an e-fold, a 350 ms time constant at the 700 px/s of a hand's drag; 350 ms, as the pyr's data glide before]
   // how long after a jump a finer level's arrival takes the lift at once; in a drag the surface's step is eased as the target's own relief is [design: the arrival of a far jump's tiers, 1.5 s]
   const LIFT_JUMP_MS = 1500;
-  const LIFT_TAU = 350;
-  let liftLatch = null, liftAt = 0;
-  function easeLift(I, now) {
-    if (!I || !Number.isFinite(I.pyr)) return liftLatch;
-    const L = liftLatch, a = 1 - Math.exp(-Math.min(1000, now - liftAt) / LIFT_TAU);
+  const LIFT_PX = 250, LIFT_TAU = 350, liftMove = mover();
+  let liftLatch = null, liftAt = 0, liftSeen = null, liftCarry = 0;
+  const arcM = (a, b) => Math.hypot((a.lat - b.lat) * D2R * PR, ((((a.lon - b.lon + 540) % 360) - 180) * D2R * PR * Math.cos(a.lat * D2R)));
+  function easeLift(I, view, now) {
+    const px = liftMove.step(view), dt = Math.min(1000, now - liftAt);
     liftAt = now;
+    if (!I || !Number.isFinite(I.pyr)) return liftLatch;
+    const L = liftLatch;
     // tiles of a finer level have arrived (the surface the planet pass marches changes at once, wgsl/globe.js gMarch): the camera stands at the height of that surface from this frame, not eased to it, or the picture
     // slides by the difference while the finer level fades in (a far jump: 130 m at A, a screen's width and more at zoom 3)
-    if (!L || !Number.isFinite(L.pyr) || !Number.isFinite(I.box) || (I.tier > L.tier && now - jumpAt < LIFT_JUMP_MS)) return { ...I };
-    const dlon = ((I.lon - L.lon + 540) % 360) - 180;
-    return Math.hypot((I.lat - L.lat) * D2R * PR, dlon * D2R * PR * Math.cos(I.lat * D2R)) < L.box ? { ...I, pyr: L.pyr + (I.pyr - L.pyr) * a } : { ...I };
+    if (!L || !Number.isFinite(L.pyr) || !Number.isFinite(I.box) || arcM(I, L) >= L.box || (I.tier > L.tier && now - jumpAt < LIFT_JUMP_MS)) { liftSeen = I; liftCarry = 0; return { ...I }; }
+    if (I !== liftSeen) {
+      if (liftSeen && arcM(I, liftSeen) < 0.5 && Math.abs(I.box / liftSeen.box - 1) < 1e-4) liftCarry += I.pyr - liftSeen.pyr;
+      liftSeen = I;
+    }
+    const through = liftCarry * (1 - Math.exp(-dt / LIFT_TAU));
+    liftCarry -= through;
+    return { ...I, pyr: L.pyr + through + (I.pyr - liftCarry - L.pyr) * (1 - Math.exp(-px / LIFT_PX)) };
+  }
+  // once a frame, with the lattice's step, for the travel the camera has made in it (a held camera moves it after the hold, solves again for it; see tickLattice); true if the lift the frame is drawn at moved enough to
+  // show. A window's cover that collapses at once (a swap to a window that does not yet cover the view: the cover is the share of the lift that is the window's camera height, which stands kilometres off the pyr on a
+  // mountain) must not move the picture, which nothing asked for: the latch takes the value that keeps the lift where it was, and the pyr it follows from there is the camera's motion's to bring in.
+  // [design: a drop of a fifth of the cover in one frame; the cover's own fade-in and the view leaving a window's reach are under a twentieth a frame]
+  const LIFT_DROP = 0.2;
+  let liftPrev = null, liftCover = 0;
+  function liftTick(view) {
+    liftLatch = easeLift(stats.liftInfo, view, performance.now());
+    if (!PLACE || !view.geo || !Number.isFinite(liftLatch?.pyr)) return false;
+    const p = planetParams(view), c = p.liftOrtho ?? p.ortho ?? 0;
+    if (liftPrev != null && p.liftM != null && c < liftCover - LIFT_DROP) {
+      liftLatch = { ...liftLatch, pyr: (liftPrev - c * p.liftM * (1 + (p.ortho ?? 0) * ((p.scale ?? 1) - 1))) / (1 - c) };
+    }
+    const now = liftOf(p), seen = liftPrev != null && Math.abs(now - liftPrev) * ppmOf(clampZ(view.zoom)) > SEEN_PX;
+    liftPrev = now;
+    liftCover = c;
+    return seen;
   }
   function liftOf(p) {
     const pyr = liftLatch?.pyr;
@@ -1292,7 +1339,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // the drawing's clock (the water's frame, the fires, the smoke), held still by the page checks (debug.hold)
     const t0 = performance.now(), now = held ?? t0;
     if (sim) simRef = sim;
-    if (latPre) latPre = false; else { latTick(view); if (PLACE && view.geo) headTick(view); }
+    if (latPre) latPre = false; else { latTick(view); liftTick(view); if (PLACE && view.geo) headTick(view); }
     // the GPU's canvas belongs to the worker once transferred: its size goes there, and is kept here only to compare
     if (glSize[0] !== canvas.width || glSize[1] !== canvas.height) { worker.postMessage({ type: "resize", W: canvas.width, H: canvas.height }); glSize = [canvas.width, canvas.height]; }
     const clock = sim?.clock?.() ?? worldClock;
@@ -1313,7 +1360,6 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     const groundOff = PLACE && (PGQ === null ? mode === "win" : PGQ === "1");
     const id = frameNo + 1, msg = { type: "frame", id, gid: PLACE ? gid : undefined, views, ahead, sprites: frameSprites, seaRGB: rgbOf(seaOf(T)), cam: view.geo && PLACE ? { lat: view.geo.lat, lon: view.geo.lon, ext: viewExtent(view) } : undefined, exag: EXAG, relief: sky.relief, cast: sky.cast && { dir: sky.cast.dir, tan: sky.cast.tan, exag: EXAG }, planet: PLACE && (groundOff || ladderAlpha(view) < 1) ? { ...planetFrame(view), light: groundLight(), spr: spriteLight(view.bearing), lightFade: smooth(2.6, 3.8, view.zoom), canopy: PG_CANOPY ?? 1 - ladderAlpha(view) * (1 - canopyHold(ppmOf(clampZ(view.zoom)), -Math.log2(Math.max(1e-3, stats.window?.share ?? 1)))) } : null, groundOff };
     sentLift = msg.planet ? msg.planet.lift ?? stats.lift ?? 0 : null;
-    liftLatch = easeLift(stats.liftInfo, t0);
     stats.canopy = msg.planet?.canopy;
     if (cursorPx && msg.planet) msg.cursor = cursorPx;
     if (probeGeo && msg.planet) msg.probe = [probeGeo.lat, probeGeo.lon];
@@ -1561,7 +1607,7 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
     // whether a view's level draws from lists built for it: a level that keeps front lists (the island levels, at a
     // whole bearing) only once the worker has built them; any other at once
     listsReady: (v) => { const L = levelFor(v.zoom).L, b = norm8(v.bearing ?? 0); return !frontLevels.has(L) || !Number.isInteger(b) || fronts.has(`${L}|${b}`); },
-    centreOn, camH, screenOf, solveTarget, groundUnder, tickLattice, moving, surfaceY, setCursor: (x, y) => { cursorPx = Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null; }, setProbe: (geo) => { probeGeo = geo ? { lat: geo.lat, lon: geo.lon } : null; }, onGround: (fn) => { onGround = fn; }, get mode() { return mode; },
+    centreOn, camH, screenOf, solveTarget, groundUnder, tickLattice, camSeen, moving, surfaceY, setCursor: (x, y) => { cursorPx = Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null; }, setProbe: (geo) => { probeGeo = geo ? { lat: geo.lat, lon: geo.lon } : null; }, onGround: (fn) => { onGround = fn; }, get mode() { return mode; },
     // what draws the frames: WebGPU in a worker, on which GPU
     renderer: () => ({ gpu: !lost, name: [info?.vendor, info?.architecture, info?.description].filter(Boolean).join(" "), why: lost ?? "", error: lastError ?? "" }),
     picks: () => lastPick.map((p) => ({ kind: p.kind, id: p.id, sx: p.sx, sy: p.sy })),

@@ -130,8 +130,8 @@ export function createCamera({ live, view, canvas, onTurn }) {
       // a zoom set from outside (a script, the bench) is taken as the new goal
       if (view.zoom !== zoomSet) { goal = zoomSet = view.zoom; anchor = null; tried = null; }
       turnStep(dt, now);
-      if ((grab?.A && grab.on) || anchor) live.tickLattice(view);
       cam.regrab();
+      if (((grab?.A && grab.on) || anchor) && live.tickLattice(view)) { cam.regrab(); live.camSeen(view); }
       if (view.zoom === goal) {
         // the zoom is over, the held ground is not: the cells' lattice, a window, the planet's tiles and the ladder's chunks go on changing the picture about the target, so the cursor keeps its ground until they stop
         if (anchor) { anchor.rest ??= now; if (now - anchor.rest > REST_MS || (!live.moving(view) && performance.now() - (anchor.changed ?? 0) > QUIET_MS)) anchor = null; }
