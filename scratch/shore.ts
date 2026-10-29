@@ -49,6 +49,7 @@ const FRAC = Number(process.env.SHORE_DTFRAC ?? 0.3); // the most a border may m
 const MAXSTEPS = Number(process.env.SHORE_MAXSTEPS ?? 1e12);
 const LOOSE8 = process.env.SHORE_LOOSE !== "4"; // loose sand = a partial cell with no full cell among its 8 neighbours (the CEM: 4 neighbours), taken back to the nearest full cell within 8 cells
 const CHORD = process.env.SHORE_CHORD !== "0";  // a visit's tangent from the chain's sub-cell points (SHORE_CHORD=0: the normal of the smoothed F)
+const HALF = Number(process.env.SHORE_HALF ?? 3);   // visits either side in the chord
 const SHAPE_MAX = Math.cos(42 * Math.PI / 180) ** 1.2 * Math.sin(42 * Math.PI / 180), COS42 = Math.cos(42 * Math.PI / 180), COS_MIN = Math.cos(89.55 * Math.PI / 180);
 
 // ---------- the state ----------
@@ -175,7 +176,7 @@ function buildChain() {
     // tangent of a visit = the chord of the sub-cell points 3 visits either side (fewer in a short loop): follows a one-cell spit, which the F gradient cannot
     for (let l = 0; l < loopA.length; l++) {
       const a = loopA[l], m = loopB[l] - a; if (m < 3) continue;
-      const hh = Math.min(3, Math.floor(m / 2));
+      const hh = Math.min(HALF, Math.floor(m / 2));
       for (let i = 0; i < m; i++) {
         const j = a + (i + hh) % m, k = a + (i - hh + m) % m, v = a + i, dx = vpx[j] - vpx[k], dy = vpy[j] - vpy[k], len = Math.hypot(dx, dy);
         if (len > 0.3) { vtx[v] = dx / len; vty[v] = dy / len; vnx[v] = -vty[v]; vny[v] = vtx[v]; }
