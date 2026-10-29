@@ -24,7 +24,7 @@ import { erosionFor, runChain, type ChainState } from "./erosion";
 import { similarityOf } from "./similarity";
 import { FACES, RADIUS_M, areaSr, cellId, eastNorth, fromLatLon, locateVec, meanAreaM2, tierGrid, type V3 } from "./grid";
 import { IF, IceGpu, defaultLaw, forcingTable, lgmForcing, orbitOf, runIce, seaState } from "./ice";
-import { DEFAULTS, cellAreas, cellVectors, derive, extTables, makeSetup, neighbours } from "./tectonics";
+import { DEFAULTS, cellAreas, cellVectors, derive, extTables, fineHeight, makeSetup, neighbours } from "./tectonics";
 
 // ---------- the planet ----------
 export const SEASON_COUNT = 4;
@@ -132,7 +132,7 @@ async function chainStage(gpu: Gpu, seed: number, radius: number, store: PlanetS
     await store.put(seed, "chain-part", packRecord({ nextRain: s.nextRain, step: s.step, quiet: s.quiet, rounds: s.rounds, ledger: s.ledger, seconds }, { S: s.S, carryLo: s.carryLo, carryHi: s.carryHi, rain: s.rain }));
     return null;
   }
-  const d = derive(set, ext.tab, res.S), arrays: Record<string, Arr> = { height: d.height, to: res.flow.to, acc: res.flow.acc };
+  const d = derive(set, ext.tab, res.S), arrays: Record<string, Arr> = { height: fineHeight(set, ext.tab, res.S), to: res.flow.to, acc: res.flow.acc };
   d.pools.forEach((p, k) => { arrays[`pool${k}`] = p; });
   return packRecord({ seconds, radius }, arrays);
 }
