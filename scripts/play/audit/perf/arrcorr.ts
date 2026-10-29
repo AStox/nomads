@@ -165,6 +165,7 @@ try {
       const msgAt = (ty: string) => { const m = A.msgs.find((x: any[]) => x[1] === ty && x[0] >= t0); return m ? Math.round(m[0] - t0) : null; };
       const row = {
         sentLift: A.sent.filter((d: any[]) => d[0] >= t0).filter((_: unknown, i: number) => i % 6 === 0).slice(0, 24).map((d: any[]) => [Math.round(d[0] - t0), ...(d[2] ?? []).map((v: number | null) => (v === null ? null : Math.round(v * 100) / 100))]),
+        drawT: draws.filter((e) => e[0] < 1400).filter((_, i) => i % 3 === 0).map((e) => [Math.round(e[0]), e[2], e[3], e[4], e[9], e[10]]),
         fineT: draws.filter((e, i) => i === 0 || e[4] !== draws[i - 1][4] || Math.abs(e[3] - draws[i - 1][3]) > 0.2).slice(0, 40).map((e) => [Math.round(e[0]), e[2], e[3], e[4]]),
         events: ev.filter((e) => !["draw", "tile", "ask"].includes(e[1])).map((e) => [Math.round(e[0]), ...e.slice(1)]),
         prof, poll,
