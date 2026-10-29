@@ -47,14 +47,15 @@ try {
     await idle();
     await r.page.mouse.move(x, y); await sleep(500);
     const s0 = (await r.page.screenshot({ type: "png" })) as Buffer;
-    const A = await r.page.evaluate((px: number, py: number) => { const w = window as any, P = w.play, a = P.live.groundUnder(P.view, px, py); w.__A = a && { x: a.x, z: a.z, y: a.y, geo: a.geo }; return w.__A && { y: a.y, z: P.view.zoom }; }, x, y);
+    const A = await r.page.evaluate((px: number, py: number) => { const w = window as any, P = w.play, a = P.live.groundUnder(P.view, px, py); w.__A = a && { x: a.x, z: a.z, y: a.y, geo: a.geo }; const G = P.live.stats.ground; return w.__A && { y: a.y, z: P.view.zoom, exact: !!G && G.y === a.y, exactY: G?.y }; }, x, y);
     if (!A) { console.log(`cursor ${x},${y}: no ground`); continue; }
     await r.page.mouse.wheel({ deltaY: DIR * 100 });
     await idle();
     const s1 = (await r.page.screenshot({ type: "png" })) as Buffer;
     const e = await r.page.evaluate((px: number, py: number) => { const w = window as any, P = w.play, s = P.live.screenOf(P.view, w.__A.x, w.__A.z, w.__A.y, w.__A.geo); return { z: P.view.zoom, d: Math.hypot(s[0] - px, s[1] - py) }; }, x, y);
+    if (process.env.DUMP) { const half = 160, sc = 2 ** (e.z - A.z); await sharp(s0).extract({ left: Math.max(0, x - half), top: Math.max(0, y - half), width: Math.min(2 * half, 1280 - Math.max(0, x - half)), height: Math.min(2 * half, 800 - Math.max(0, y - half)) }).toFile(`${process.env.DUMP}-${x}-${y}-a.png`); await sharp(s1).extract({ left: Math.max(0, x - half), top: Math.max(0, y - half), width: Math.min(2 * half, 1280 - Math.max(0, x - half)), height: Math.min(2 * half, 800 - Math.max(0, y - half)) }).toFile(`${process.env.DUMP}-${x}-${y}-b.png`); void sc; }
     const m = await find(s0, s1, x, y, 2 ** (e.z - A.z));
-    console.log(`cursor ${x},${y}: zoom ${A.z.toFixed(2)} to ${e.z.toFixed(2)}, API shift ${e.d.toFixed(1)} px, picture shift ${Math.hypot(m.x, m.y).toFixed(1)} px (${m.x},${m.y}, correlation ${m.c.toFixed(2)}), pick y ${A.y.toFixed(0)}`);
+    console.log(`cursor ${x},${y}: zoom ${A.z.toFixed(2)} to ${e.z.toFixed(2)}, API shift ${e.d.toFixed(1)} px, picture shift ${Math.hypot(m.x, m.y).toFixed(1)} px (${m.x},${m.y}, correlation ${m.c.toFixed(2)}), pick y ${A.y.toFixed(0)}${A.exact ? " (exact)" : ` (relief grid; exact ${A.exactY?.toFixed?.(0)})`}`);
   }
 } finally { await r.close(); }
 process.exit(0);

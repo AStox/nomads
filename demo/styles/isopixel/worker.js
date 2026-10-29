@@ -1069,14 +1069,19 @@ function drawnTier(cam, sx, sy) {
   const level = Math.min(TOP_TIER, Math.max(0, Math.log2(cell0 / Math.max(mpp, 1e-3))));
   return Math.min(Math.ceil(level), Math.ceil(sh.cap), TOP_TIER);
 }
-// The height (metres) the picture draws at unit point P: the surface of the tier its pixel marches at, found where P lands through two fixed-point steps (the pixel depends on the height and the tier on the pixel). The
-// sphere-level height where P is off the screen or behind the planet.
-function drawnHeightAt(cam, P, ex) {
-  let h = drawnHeight(P);
-  for (let k = 0; k < 2; k++) {
+// The height (metres) the picture draws at unit point P: the surface of the tier its pixel marches at, found where P lands. The pixel depends on the height and the tier on the pixel, so it is a fixed point, taken from the
+// height the caller holds the place at (h0, the page's: the place is where the picture drew it, and its own height is that fixed point where the pick found it) until a step moves it under HEIGHT_TOL, at most PROBE_STEPS
+// steps; from the blended height of the tiers where the caller has none. The sphere-level height where P is off the screen or behind the planet.
+// [design: a quarter metre, under a pixel at the closest zoom; 6 steps: the tier changes by one across the screen]
+const HEIGHT_TOL = 0.25, PROBE_STEPS = 6;
+function drawnHeightAt(cam, P, ex, h0) {
+  let h = Number.isFinite(h0) ? h0 : drawnHeight(P);
+  for (let k = 0; k < PROBE_STEPS; k++) {
     const s = cam.project([P[0] * (1 + (h * ex) / cam.radiusM), P[1] * (1 + (h * ex) / cam.radiusM), P[2] * (1 + (h * ex) / cam.radiusM)]);
     if (!s) return h;
-    h = drawnHeight(P, drawnTier(cam, s[0], s[1]));
+    const next = drawnHeight(P, drawnTier(cam, s[0], s[1])), done = Math.abs(next - h) < HEIGHT_TOL;
+    h = next;
+    if (done) break;
   }
   return h;
 }
@@ -1132,7 +1137,7 @@ function surfaceUnder(cam, sx, sy, ex) {
 // is not the held place's: a point held at the height the cursor shows is not where the ray meets the surface unless the surface is flat, and chasing it up a slope moved the held point by kilometres
 function groundAnswer(f, g) {
   const c = f.cursor, hit = c && g ? surfaceUnder(g.cam, c[0], c[1], g.ex) : null;
-  const pr = f.probe && planet ? (() => { const P = planet.G.fromLatLon((f.probe[0] * Math.PI) / 180, (f.probe[1] * Math.PI) / 180); return { lat: f.probe[0], lon: f.probe[1], y: g ? drawnHeightAt(g.cam, P, g.ex) : drawnHeight(P) }; })() : null;
+  const pr = f.probe && planet ? (() => { const P = planet.G.fromLatLon((f.probe[0] * Math.PI) / 180, (f.probe[1] * Math.PI) / 180); return { lat: f.probe[0], lon: f.probe[1], y: g ? drawnHeightAt(g.cam, P, g.ex, f.probe[2]) : drawnHeight(P) }; })() : null;
   return hit || pr ? { at: hit ? c : null, p: hit?.p, y: hit?.y, probe: pr } : null;
 }
 // The pages the planet pass reads where no window is (the view is wider than a window covers, under about zoom 3, or the camera is away from any): a block of them round the camera's page, made behind the frames and

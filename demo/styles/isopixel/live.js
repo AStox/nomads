@@ -1643,7 +1643,6 @@ export async function createLive({ seed = 1, canvas, onProgress, sim: simOpts = 
       planetScreenGeo: (view, geo) => (PLACE ? planetScreen(view, geo) : null),
       // the cells' lattice the planet camera draws with now, the share of it that is the exact one (LAT_COVER) and the face the exact one is read on, for the drag checks
       lattice: (view) => ({ ...latOf(view), cover: LAT_COVER(view), face: latFace, mode }),
-      liftState: (view) => { const p = planetParams(view); return { pyr: liftLatch?.pyr, prev: liftPrev, sent: sentLift, near: liftNear(p), of: liftOf(p), next: liftNext(p), c: p.liftOrtho, liftM: p.liftM, gid }; },
       // the planet camera's look at a view (planet-cam.js takes it as it is) and the lift it stands at, to solve its picks offline
       look: (view) => ({ ...planetParams(view), lift: stats.lift ?? 0, radiusM: PR, w: canvas.width, h: canvas.height }),
       // the drawing's clock held where it is (on), at a given reading (a number: the same animation frame in every run, for stills that must repeat), or let run again (false)

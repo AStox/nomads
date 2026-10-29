@@ -1,10 +1,10 @@
 // After a drag is released nothing was asked, so the picture must be at rest: per frame for a window after the release, the ground the drag held (picked under the cursor before the button went down, then screenOf), and the
 // camera terms that could still move it (the target, hd, the lattice's turn, scale and q, the lift and the pyr). Real mouse (CDP): button down, STEPS moves of DX, DY every GAP ms, button up.
-//   lockf /tmp/nomads-gpu.lock bun scripts/play/audit/perf/release.ts      SITE, PROFILE, ONLY=A,B,E2, FAST=0 (slow drag), SECS (2), LIMIT (px of the held ground's shift after the release, default 1)
+//   lockf /tmp/nomads-gpu.lock bun scripts/play/audit/perf/release.ts      SITE, PROFILE, ONLY=A,B,E2, FAST=0 (slow drag), SECS (2), LIMIT (px of the held ground's shift after the release, default 1), SETTLE (ms after the place is idle, 1600)
 import { launch, sleep, load } from "./lib";
 // name, lat, lon, zoom (the e2e tester's burstinertia cases and the cube edge)
 const CASES: [string, number, number, number][] = [["B", -35.9, 43.59, 1.8], ["A", 4.35, -39.38, 0.5], ["E2", 13.27, 45, -1], ["Bz-1", -35.9, 43.59, -1], ["P", 45, 0, 0.5]];
-const only = (process.env.ONLY ?? "").split(",").filter(Boolean), fast = process.env.FAST !== "0", SECS = Number(process.env.SECS ?? 2), LIMIT = Number(process.env.LIMIT ?? 1), TRACE = !!process.env.TRACE;
+const only = (process.env.ONLY ?? "").split(",").filter(Boolean), fast = process.env.FAST !== "0", SECS = Number(process.env.SECS ?? 2), LIMIT = Number(process.env.LIMIT ?? 1), TRACE = !!process.env.TRACE, SETTLE = Number(process.env.SETTLE ?? 1600);
 const r = await launch({ profile: process.env.PROFILE, vw: 1280, vh: 800 });
 let bad = 0;
 try {
@@ -27,6 +27,8 @@ try {
     if (only.length && !only.includes(name)) continue;
     await r.page.evaluate((a: number, b: number, zz: number) => { const P = (window as any).play; P.view.bearing = 0; P.view.geo = { lat: a, lon: b }; P.camera.setZoom(zz); }, lat, lon, z);
     await idle();
+    // the lift takes a finer level's arrival at once within 1.5 s of a jump (live.js LIFT_JUMP_MS), which the place just set is: a drag released inside that window is a different case
+    await sleep(SETTLE);
     await r.page.mouse.move(500, 400); await sleep(150);
     await r.page.evaluate(() => { const w = window as any, P = w.play, A = P.live.groundUnder(P.view, 500, 400); w.__rec = { A: { x: A.x, z: A.z, y: A.y, geo: A.geo }, f: [] }; });
     await r.page.mouse.down();
