@@ -3,7 +3,7 @@
 //   bun scripts/globe-gates.ts planet --tier 0 --key K [--seed 1] [--run v14] [--jsonl out.jsonl] [--chain <store>/chain.bin]
 //   bun scripts/globe-gates.ts planet --tier 3 --t3dir DIR --key K            # DIR/<seed>-<key>/t3-height.i32 (1/256 m), cells stride 2 for the relief windows
 //   bun scripts/globe-gates.ts region --name R1-t5 --land-dir DIR --tier 5 --face 0 --tx 23 --ty 17 --tiles 8 --key K [--state path]
-//   bun scripts/globe-gates.ts window --file t5-height.i32 [--flooded t5-flooded.i32] --tier 5 [--down 2] --face 1 --x0 2304 --y0 4096 --size 2048 --name old-Rblk   # straight gates on a window of ANY whole-tier file (--down k: its k x k box means)
+//   bun scripts/globe-gates.ts window --file t5-height.i32 [--flooded t5-flooded.i32] [--tree t5-tree.u8 (tier 5 only: the tree-cover patches)] --tier 5 [--down 2] --face 1 --x0 2304 --y0 4096 --size 2048 --name old-Rblk   # straight gates on a window of ANY whole-tier file (--down k: its k x k box means)
 //   bun scripts/globe-gates.ts pick --file t5-height.i32 --tier 5 --size 2048 --min-land 0.3 [--step 1024]   # windows of the file holding at least that share of land (sampled every 8th cell)
 //   (region takes --only straight: the straight-coast / lake / spit gates alone; both print straight.coast, straight.lakes, straight.lakesFile, straight.spits, straight.rot)
 //   bun scripts/globe-gates.ts map --t3dir DIR --key K --out planet.png [--vex 4]   # 4096 x 2048 equirectangular of tier 3, hillshaded
@@ -38,6 +38,14 @@ function readWindow(path: string, fn: number, face: number, x0: number, y0: numb
       const row = new Uint8Array(out.buffer, y * size * 4, size * 4);
       if (readSync(fd, row, 0, size * 4, ((face * fn + y0 + y) * fn + x0) * 4) !== size * 4) throw new Error(`${path}: short read at face ${face} row ${y0 + y}`);
     }
+  } finally { closeSync(fd); }
+  return out;
+}
+// the cells of a size x size window of a whole-tier u8 plane (a cover share), as readWindow reads an i32 one
+function readWindowU8(path: string, fn: number, face: number, x0: number, y0: number, size: number): Uint8Array {
+  const fd = openSync(path, "r"), out = new Uint8Array(size * size);
+  try {
+    for (let y = 0; y < size; y++) if (readSync(fd, out.subarray(y * size, (y + 1) * size), 0, size, (face * fn + y0 + y) * fn + x0) !== size) throw new Error(`${path}: short read at face ${face} row ${y0 + y}`);
   } finally { closeSync(fd); }
   return out;
 }
@@ -81,7 +89,7 @@ if (import.meta.main) {
       for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) { let t = 0; for (let b = 0; b < down; b++) for (let a = 0; a < down; a++) t += raw[(y * down + b) * size * down + x * down + a]; out[y * size + x] = Math.round(t / (down * down)); }
       return out;
     };
-    straightEmit(arg("name", ""), tier, face, x0, y0, straightMeasures({ h: read(arg("file", "")), size, cellM: 75 * 2 ** (5 - tier), margin, flooded: flooded ? read(flooded) : undefined, ox: x0 / down, oy: y0 / down }, log));
+    straightEmit(arg("name", ""), tier, face, x0, y0, straightMeasures({ h: read(arg("file", "")), size, cellM: 75 * 2 ** (5 - tier), margin, flooded: flooded ? read(flooded) : undefined, tree: arg("tree", "") && down === 1 ? readWindowU8(arg("tree", ""), fn, face, x0, y0, size) : undefined, ox: x0 / down, oy: y0 / down }, log));
   } else if (cmd === "pick") {
     const tier = Number(arg("tier", "5")), fn = 2048 * 2 ** (tier - 3), size = Number(arg("size", "2048")), step = Number(arg("step", String(size / 2))), min = Number(arg("min-land", "0.3")), sample = 8;
     const fd = openSync(arg("file", ""), "r"), per = fn / sample, grid = new Uint8Array(6 * per * per), row = new Int32Array(fn);

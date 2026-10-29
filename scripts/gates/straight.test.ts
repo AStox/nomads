@@ -1,6 +1,6 @@
 // The straight-coast, straight-lake and thin-spit gates against inputs with a known answer (CPU only): a square island, a disc, a square rotated 20 degrees, a thin N-S spit, a lake strip.
 import { describe, expect, test } from "bun:test";
-import { crop, edgePhase, exactRuns, floodLakes, lakeMeasures, shoreChains, spitMeasures, straightMeasures } from "./straight";
+import { coastTeeth, crop, edgePhase, exactRuns, floodLakes, lakeMeasures, patchShapes, shoreChains, spitMeasures, straightMeasures } from "./straight";
 
 const CELL = 75;
 // heights in 1/256 m from a function of the cell (metres)
@@ -105,5 +105,50 @@ describe("straight lakes and spits", () => {
   test("the margin crop keeps the middle", () => {
     const side = 8, a = Int32Array.from({ length: 64 }, (_, i) => i), c = crop(a, side, 2);
     expect(c.length).toBe(16); expect(c[0]).toBe(18); expect(c[15]).toBe(45);
+  });
+});
+
+const chainsOf = (h: Int32Array, side: number) => shoreChains(Uint8Array.from(h, (v) => (v > 0 ? 1 : 0)), Uint8Array.from(h, (v) => (v > 0 ? 0 : 1)), side);
+const maskOf = (side: number, f: (x: number, y: number) => boolean) => { const m = new Uint8Array(side * side); for (let y = 0; y < side; y++) for (let x = 0; x < side; x++) m[y * side + x] = f(x, y) ? 1 : 0; return m; };
+
+describe("coast teeth", () => {
+  test("a staircase of 32 by 32 cell steps reverses at every step; a square island and a disc never do", () => {
+    const side = 512, stairs = field(side, (x, y) => (y >= 100 + 32 * Math.floor(x / 32) ? 50 : -50)), t = coastTeeth(chainsOf(stairs, side), side, CELL);
+    expect(t.reversals).toBeGreaterThanOrEqual(12); expect(t.reversalsPerKm!).toBeGreaterThan(0.3); expect(t.reversalsPerKm!).toBeLessThan(0.5); expect(t.axis.L16).toBeGreaterThan(0.8); expect(t.axis.L32).toBeGreaterThan(0.6);
+    const sq = coastTeeth(chainsOf(field(side, (x, y) => (x >= 100 && x < 400 && y >= 100 && y < 400 ? 50 : -50)), side), side, CELL);
+    expect(sq.corners).toBe(4); expect(sq.reversals).toBe(0);
+    const disc = coastTeeth(chainsOf(field(side, (x, y) => (Math.hypot(x - 256, y - 256) < 150 ? 50 : -50)), side), side, CELL);
+    expect(disc.reversals).toBe(0); expect(disc.corners).toBe(0);
+  });
+  test("a zigzag of 45 degree teeth reverses at every tooth, a straight diagonal coast has no corner but is all diagonal run", () => {
+    const side = 512, zig = field(side, (x, y) => (y >= 200 + Math.abs(((x % 64) + 64) % 64 - 32) ? 50 : -50)), t = coastTeeth(chainsOf(zig, side), side, CELL);
+    expect(t.reversals).toBeGreaterThanOrEqual(12); expect(t.diag.L16).toBeGreaterThan(0.8);
+    const band = coastTeeth(chainsOf(field(side, (x, y) => (y > x ? 50 : -50)), side), side, CELL);
+    expect(band.corners).toBeLessThanOrEqual(2); expect(band.reversals).toBe(0); expect(band.diag.L32).toBeGreaterThan(0.95); expect(band.axis.L8).toBeLessThan(0.1);
+  });
+  test("a coast of wandering curves has no tooth", () => {
+    const side = 512, wave = field(side, (x, y) => (y >= 256 + 40 * Math.sin(x / 40) + 15 * Math.sin(x / 13) ? 50 : -50)), t = coastTeeth(chainsOf(wave, side), side, CELL);
+    expect(t.reversals).toBe(0);
+  });
+});
+
+describe("patch shapes", () => {
+  test("a rectangular lake is squared and straight, a disc is neither, a turned rectangle is rectangular by its oriented box and not its bounding box", () => {
+    const side = 300, rect = patchShapes(maskOf(side, (x, y) => x >= 100 && x < 140 && y >= 100 && y < 125), side, CELL);
+    expect(rect.n).toBe(1); expect(rect.fillBox.median).toBe(1); expect(rect.fillObb.median).toBe(1); expect(rect.corners.mean).toBe(4); expect(rect.corners.squared).toBe(1);
+    expect(rect.straight.exactAxis).toBeGreaterThan(0.5); expect(rect.straight.axis).toBeGreaterThan(0.5);
+    const disc = patchShapes(maskOf(side, (x, y) => Math.hypot(x - 150, y - 150) < 25), side, CELL);
+    expect(disc.fillObb.median).toBeGreaterThan(0.72); expect(disc.fillObb.median).toBeLessThan(0.85); expect(disc.corners.squared).toBe(0); expect(disc.corners.mean).toBe(0);
+    const t = Math.PI / 4, turned = patchShapes(maskOf(side, (x, y) => { const u = ((x - 150) * Math.cos(t) + (y - 150) * Math.sin(t)), v = (-(x - 150) * Math.sin(t) + (y - 150) * Math.cos(t)); return Math.abs(u) < 25 && Math.abs(v) < 15; }), side, CELL);
+    expect(turned.fillBox.median).toBeLessThan(0.65); expect(turned.fillObb.median).toBeGreaterThan(0.9); expect(turned.straight.diag).toBeGreaterThan(0.4); expect(turned.straight.axis).toBeLessThan(0.1);
+  });
+  test("patches under 64 cells and patches on the block's edge are not counted", () => {
+    const side = 200, m = maskOf(side, (x, y) => (x >= 10 && x < 17 && y >= 10 && y < 17) || (x < 20 && y >= 100 && y < 140) || (x >= 100 && x < 120 && y >= 100 && y < 120));
+    const p = patchShapes(m, side, CELL);
+    expect(p.n).toBe(1); expect(p.areaKm2).toBeCloseTo((400 * CELL * CELL) / 1e6, 4);
+  });
+  test("a sea-level pit inland is a pit patch; the sea beside the block's edge is not; a flat-bottomed square basin is squared", () => {
+    const side = 300, h = field(side, (x, y) => (x < 30 ? -20 : x >= 100 && x < 130 && y >= 100 && y < 120 ? -1 : 10)), r = run(h, side);
+    expect(r.patches.pits.n).toBe(1); expect(r.patches.pits.corners.squared).toBe(1); expect(r.patches.pits.fillObb.median).toBe(1);
   });
 });

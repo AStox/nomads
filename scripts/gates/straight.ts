@@ -125,19 +125,19 @@ export interface ShoreRuns {
 
 const r4 = (v: number) => +v.toFixed(4);
 
-// Runs of every chain along each of the 8 directions; marks[cell] bit (dir * 4 + length index); longest[dir] in cells.
-function markRuns(ch: Chains, side: number, marks: Uint32Array, longest: Float64Array) {
+// Runs of every chain along each of `dirs` (degrees; default the 8 of DIRS) and for each of `lens` (default RUN_LENGTHS) cells; marks[cell] bit (dir index * lens.length + length index); longest[dir] in cells.
+function markRuns(ch: Chains, side: number, marks: Uint32Array, longest: Float64Array, dirs: readonly number[] = DIRS, lens: readonly number[] = RUN_LENGTHS) {
   for (let q = 0; q < ch.seq.length; q++) {
     const cells = ch.seq[q], n = cells.length, closed = ch.closed[q] && n > 2, m = closed ? 2 * n : n;
     const px = new Float64Array(m), py = new Float64Array(m);
     for (let k = 0; k < m; k++) { const c = cells[k % n]; px[k] = c % side; py[k] = (c / side) | 0; }
-    for (let di = 0; di < DIRS.length; di++) {
-      const t = (DIRS[di] * Math.PI) / 180, ct = Math.cos(t), st = Math.sin(t);
+    for (let di = 0; di < dirs.length; di++) {
+      const t = (dirs[di] * Math.PI) / 180, ct = Math.cos(t), st = Math.sin(t);
       const d = new Float64Array(m), s = new Float64Array(m);
       for (let k = 0; k < m; k++) { d[k] = -px[k] * st + py[k] * ct; s[k] = px[k] * ct + py[k] * st; }
       const dmax = new Int32Array(m), dmin = new Int32Array(m), smax = new Int32Array(m), smin = new Int32Array(m);
       let a1 = 0, b1 = 0, a2 = 0, b2 = 0, a3 = 0, b3 = 0, a4 = 0, b4 = 0; // head and tail of the four deques
-      const diff = RUN_LENGTHS.map(() => new Int32Array(m + 1));
+      const diff = lens.map(() => new Int32Array(m + 1));
       let j = -1;
       const lim = (i: number) => Math.min(m, closed ? i + n : n);
       for (let i = 0; i < (closed ? n : m); i++) {
@@ -154,11 +154,11 @@ function markRuns(ch: Chains, side: number, marks: Uint32Array, longest: Float64
         }
         const ext = s[smax[a3]] - s[smin[a4]] + 1;
         if (ext > longest[di]) longest[di] = ext;
-        for (let li = 0; li < RUN_LENGTHS.length; li++) if (ext >= RUN_LENGTHS[li] - 1e-9) { diff[li][i]++; diff[li][j + 1]--; }
+        for (let li = 0; li < lens.length; li++) if (ext >= lens[li] - 1e-9) { diff[li][i]++; diff[li][j + 1]--; }
       }
-      for (let li = 0; li < RUN_LENGTHS.length; li++) {
+      for (let li = 0; li < lens.length; li++) {
         let cover = 0;
-        const bit = (1 << (di * 4 + li)) >>> 0, mark = new Uint8Array(n);
+        const bit = (1 << (di * lens.length + li)) >>> 0, mark = new Uint8Array(n);
         for (let p = 0; p < m; p++) { cover += diff[li][p]; if (cover > 0) mark[p % n] = 1; }
         for (let p = 0; p < n; p++) if (mark[p]) marks[cells[p]] = (marks[cells[p]] | bit) >>> 0;
       }
@@ -415,8 +415,124 @@ export function exactRuns(mask: Uint8Array, side: number, ox: number, oy: number
   return { edges, share: { L16: share(16), L32: share(32), L64: share(64), L128: share(128) }, longestKm: r4(((top[0]?.len ?? Math.max(0, ...lens)) * cellM) / 1000), top: top.slice(0, 5) };
 }
 
-export interface StraightIn { h: Int32Array; size: number; cellM: number; margin: number; flooded?: Int32Array; rotate?: number[]; ox?: number; oy?: number }
-export interface StraightResult { size: number; cellM: number; margin: number; landCells: number; phase: { coast: Phase; lakes: Phase }; exact: { coast: ExactRuns; lakes: ExactRuns }; inlets: SpitMeasures; coast: ShoreRuns; lakes: LakeMeasures; lakesFile: LakeMeasures | null; spits: SpitMeasures; rot: RotatedControl | null }
+// ---------- teeth, and the shapes of lake, pit and cover patches ----------
+// teeth        the shore's corners: the chain's cells at every TOOTH_STRIDE-th cell make a polygon; a vertex whose chords turn by TOOTH_TURN degrees or more is a corner (consecutive vertices turning the same
+//              way are one corner: a 90 degree corner met between two vertices shows as two turns that sum to 90). A reversal is a corner whose turn is the other way from the corner before it on the
+//              same chain (a closed chain compares the last with the first): a sawtooth reverses at every tooth, a square island or a disc never (all its corners turn one way). `reversalsPerKm` per km of
+//              chain (cells x cell width). A staircase of one-cell steps along a diagonal has no corner at that stride; the lattice-diagonal and lattice-axis runs of 8, 16 and 32 cells are in `diag`
+//              and `axis` (the shares of the chain's cells in a run, as shoreRuns). In the page's view the two lattice axes are the two screen diagonals.
+// patches      a patch is a 4-connected component of 64 cells or more that does not meet the block's edge: a lake (flooded), an inland sea-level pit (sea cells that the sea does not reach inside the
+//              block), a lake of the file's flooded plane, a tree-cover patch (tree share of 0.5 or more on land). Per set: `straight` = the share of the patches' boundary cells that lie in a run of
+//              1 km (ceil(1000 / cell width) cells) or more along a lattice axis (`axis`), a lattice diagonal (`diag`), either (`any`) and, as the control, along the 20/110 and 65/155 degree pairs
+//              (`ctrl`: the mean); `exactAxis` = the share of the boundary's edges on one lattice line over 1 km or more with no jitter. `fillBox` = area over bounding box, `fillObb` = area over the
+//              smallest enclosing rectangle (turned in 1 degree steps), each as median, mean and the share of patches at 0.9 or more (a rectangle 1, a disc 0.785). `corners` = the mean number of
+//              corners (as for the shore, stride 4 cells) of a patch, and `squared` = the share of patches with fillObb of 0.85 or more and 3 corners or more (a raster rectangle has 4, a disc 0).
+export const TOOTH_STRIDE = 6, TOOTH_TURN = 45, PATCH_STRIDE = 4, PATCH_MIN = 64, SQUARED_FILL = 0.85;
+export interface Shares3 { L8: number; L16: number; L32: number }
+export interface Teeth { cells: number; km: number; corners: number; reversals: number; reversalsPerKm: number | null; axis: Shares3; diag: Shares3 }
+
+// Corners of each chain, in order, as the sign of their turn (+1 / -1): vertices every `stride` cells, a vertex turning `turn` degrees or more, consecutive vertices of one sign merged.
+function chainCorners(ch: Chains, side: number, stride: number, turn: number): number[][] {
+  return ch.seq.map((cells, q) => {
+    const n = cells.length, closed = ch.closed[q] && n >= 3 * stride, nv = Math.floor(n / stride);
+    if (nv < 3) return [];
+    const vx = (k: number) => cells[(k * stride) % n] % side, vy = (k: number) => ((cells[(k * stride) % n] / side) | 0);
+    const signs: number[] = [];
+    for (let k = closed ? 0 : 1; k < (closed ? nv : nv - 1); k++) {
+      const a = (k - 1 + nv) % nv, b = (k + 1) % nv, ax = vx(k) - vx(a), ay = vy(k) - vy(a), bx = vx(b) - vx(k), by = vy(b) - vy(k);
+      const ang = (Math.atan2(ax * by - ay * bx, ax * bx + ay * by) * 180) / Math.PI;
+      signs.push(Math.abs(ang) >= turn ? Math.sign(ang) : 0);
+    }
+    const out: number[] = [];
+    for (let i = 0; i < signs.length; i++) if (signs[i] !== 0 && !(out.length && signs[i - 1] === signs[i])) out.push(signs[i]);
+    if (closed && out.length > 1 && signs[0] === signs[signs.length - 1] && signs[0] !== 0) out.pop(); // the first and last vertex are one corner
+    return out;
+  });
+}
+function reversalsOf(corners: number[][], ch: Chains): number {
+  let r = 0;
+  corners.forEach((c, q) => {
+    for (let i = 1; i < c.length; i++) if (c[i] !== c[i - 1]) r++;
+    if (ch.closed[q] && c.length > 2 && c[0] !== c[c.length - 1]) r++;
+  });
+  return r;
+}
+
+export function coastTeeth(ch: Chains, side: number, cellM: number): Teeth {
+  const lens = [8, 16, 32], marks = new Uint32Array(side * side), longest = new Float64Array(4), seen = new Set<number>();
+  markRuns(ch, side, marks, longest, [0, 90, 45, 135], lens);
+  for (const c of ch.seq) for (const k of c) seen.add(k);
+  const cells = [...seen], N = Math.max(1, cells.length), km = (cells.length * cellM) / 1000;
+  const share = (dirs: number[], li: number) => { let c = 0; for (const k of cells) for (const di of dirs) if (marks[k] & ((1 << (di * lens.length + li)) >>> 0)) { c++; break; } return r4(c / N); };
+  const set = (dirs: number[]): Shares3 => ({ L8: share(dirs, 0), L16: share(dirs, 1), L32: share(dirs, 2) });
+  const corners = chainCorners(ch, side, TOOTH_STRIDE, TOOTH_TURN), nc = corners.reduce((t, c) => t + c.length, 0), rev = reversalsOf(corners, ch);
+  return { cells: cells.length, km: r4(km), corners: nc, reversals: rev, reversalsPerKm: km > 0 ? r4(rev / km) : null, axis: set([0, 1]), diag: set([2, 3]) };
+}
+
+interface Quant { median: number; mean: number; share90: number }
+export interface PatchShapes {
+  n: number; areaKm2: number; boundary: number;
+  straight: { axis: number; diag: number; any: number; ctrl: number; exactAxis: number };
+  fillBox: Quant; fillObb: Quant; corners: { mean: number; squared: number };
+}
+const quant = (v: number[]): Quant => {
+  if (!v.length) return { median: 0, mean: 0, share90: 0 };
+  const s = [...v].sort((a, b) => a - b);
+  return { median: r4(s[s.length >> 1]), mean: r4(v.reduce((t, x) => t + x, 0) / v.length), share90: r4(v.filter((x) => x >= 0.9).length / v.length) };
+};
+// area over the smallest rectangle (turned in 1 degree steps) that holds the component's boundary cells
+function fillObb(boundary: number[], cells: number, side: number): number {
+  let best = Infinity;
+  const bx = boundary.map((c) => c % side), by = boundary.map((c) => (c / side) | 0);
+  for (let a = 0; a < 90; a++) {
+    const t = (a * Math.PI) / 180, ct = Math.cos(t), st = Math.sin(t);
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (let i = 0; i < bx.length; i++) { const u = bx[i] * ct + by[i] * st, v = -bx[i] * st + by[i] * ct; if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v; }
+    best = Math.min(best, (u1 - u0 + 1) * (v1 - v0 + 1));
+  }
+  return Math.min(1, cells / best);
+}
+
+export function patchShapes(mask: Uint8Array, side: number, cellM: number): PatchShapes {
+  const { comps, ids } = components(mask, side, false), n = side * side, keep = new Uint8Array(n), label = new Int32Array(n).fill(-1), L = Math.ceil(1000 / cellM);
+  const fb: number[] = [], fo: number[] = [], kept: number[] = [];
+  let area = 0;
+  comps.forEach((c, i) => {
+    if (c.cells < PATCH_MIN || c.touches) return;
+    kept.push(i); area += (c.cells * cellM * cellM) / 1e6;
+    for (const k of ids[i]) { keep[k] = 1; label[k] = kept.length - 1; }
+    fb.push(c.cells / (c.bw * c.bh));
+    const bd = ids[i].filter((k) => !mask[k - 1] || !mask[k + 1] || !mask[k - side] || !mask[k + side]);
+    fo.push(fillObb(Array.from(bd), c.cells, side));
+  });
+  const water = Uint8Array.from(keep, (v) => 1 - v), ch = shoreChains(keep, water, side);
+  const dirs = [0, 90, 45, 135, 20, 110, 65, 155], marks = new Uint32Array(n), longest = new Float64Array(dirs.length), seen = new Set<number>();
+  markRuns(ch, side, marks, longest, dirs, [L]);
+  for (const c of ch.seq) for (const k of c) seen.add(k);
+  const cells = [...seen], N = Math.max(1, cells.length);
+  const share = (ds: number[]) => { let c = 0; for (const k of cells) for (const di of ds) if (marks[k] & ((1 << di) >>> 0)) { c++; break; } return c / N; };
+  const ctrl = (share([4, 5]) + share([6, 7])) / 2;
+  // exact straight edges of 1 km or more over the kept patches' boundary
+  let edges = 0, inRun = 0;
+  for (const dir of ["x", "y"] as const) for (let g = 0; g + 1 < side; g++) {
+    let start = -1;
+    for (let t = 0; t <= side; t++) {
+      const on = t < side && (dir === "x" ? keep[t * side + g] !== keep[t * side + g + 1] : keep[g * side + t] !== keep[(g + 1) * side + t]);
+      if (on) { edges++; if (start < 0) start = t; } else if (start >= 0) { if (t - start >= L) inRun += t - start; start = -1; }
+    }
+  }
+  const corners = chainCorners(ch, side, PATCH_STRIDE, TOOTH_TURN), per = new Int32Array(kept.length);
+  ch.seq.forEach((c, q) => { if (c.length) per[label[c[0]]] += corners[q].length; });
+  const squared = fo.filter((f, i) => f >= SQUARED_FILL && per[i] >= 3).length;
+  return {
+    n: kept.length, areaKm2: r4(area), boundary: cells.length,
+    straight: { axis: r4(share([0, 1])), diag: r4(share([2, 3])), any: r4(share([0, 1, 2, 3])), ctrl: r4(ctrl), exactAxis: r4(inRun / Math.max(1, edges)) },
+    fillBox: quant(fb), fillObb: quant(fo), corners: { mean: kept.length ? r4(per.reduce((t, v) => t + v, 0) / kept.length) : 0, squared: kept.length ? r4(squared / kept.length) : 0 },
+  };
+}
+
+export interface StraightIn { h: Int32Array; size: number; cellM: number; margin: number; flooded?: Int32Array; tree?: Uint8Array; rotate?: number[]; ox?: number; oy?: number }
+export interface StraightResult { size: number; cellM: number; margin: number; landCells: number; phase: { coast: Phase; lakes: Phase }; exact: { coast: ExactRuns; lakes: ExactRuns }; inlets: SpitMeasures; coast: ShoreRuns; teeth: Teeth; patches: { lakes: PatchShapes; lakesFile: PatchShapes | null; pits: PatchShapes; tree: PatchShapes | null }; lakes: LakeMeasures; lakesFile: LakeMeasures | null; spits: SpitMeasures; rot: RotatedControl | null }
 
 export function straightMeasures(r: StraightIn, log: (s: string) => void = () => {}): StraightResult {
   const side = r.size - 2 * r.margin, h = crop(r.h, r.size, r.margin), lk = floodLakes(h, side);
@@ -425,14 +541,15 @@ export function straightMeasures(r: StraightIn, log: (s: string) => void = () =>
   const sea = new Uint8Array(side * side), inside = new Uint8Array(side * side);
   let landCells = 0;
   for (let k = 0; k < sea.length; k++) { const s = h[k] <= 0 && !lk[k]; sea[k] = s ? 1 : 0; inside[k] = s ? 0 : 1; if (h[k] > 0) landCells++; }
-  const coast = shoreRuns(shoreChains(inside, sea, side), side, r.cellM);
+  const coastChains = shoreChains(inside, sea, side), coast = shoreRuns(coastChains, side, r.cellM), teeth = coastTeeth(coastChains, side, r.cellM);
   log("coast");
   const lakes = lakeMeasures(h, lk, side, r.cellM, "flood");
-  let lakesFile: LakeMeasures | null = null;
+  let lakesFile: LakeMeasures | null = null, filePatches: PatchShapes | null = null;
   if (r.flooded) {
     const f = crop(r.flooded, r.size, r.margin), lf = new Uint8Array(side * side);
     for (let k = 0; k < lf.length; k++) lf[k] = f[k] > h[k] ? 1 : 0;
     lakesFile = lakeMeasures(h, lf, side, r.cellM, "file");
+    filePatches = patchShapes(lf, side, r.cellM);
   }
   log("lakes");
   const spits = spitMeasures(h, side, r.cellM);
@@ -445,5 +562,7 @@ export function straightMeasures(r: StraightIn, log: (s: string) => void = () =>
   // inlets: the same measure on the sea (h <= 0, lakes of the flood included as land) with squares of 12 cells: water narrower than 12 cells, in strips of 64 cells or more
   const inlets = spitMeasures(Int32Array.from(h, (v) => (v <= 0 ? 1 : -1)), side, r.cellM, 12, 64);
   const exact = { coast: exactRuns(sea, side, ox, oy, r.cellM), lakes: exactRuns(bigLake, side, ox, oy, r.cellM) };
-  return { size: side, cellM: r.cellM, margin: r.margin, landCells, phase, exact, inlets, coast, lakes, lakesFile, spits, rot };
+  const treeMask = r.tree ? Uint8Array.from(crop(r.tree, r.size, r.margin), (v, k) => (v >= 128 && h[k] > 0 ? 1 : 0)) : null;
+  const patches = { lakes: patchShapes(lk, side, r.cellM), lakesFile: filePatches, pits: patchShapes(sea, side, r.cellM), tree: treeMask ? patchShapes(treeMask, side, r.cellM) : null };
+  return { size: side, cellM: r.cellM, margin: r.margin, landCells, phase, exact, inlets, coast, teeth, patches, lakes, lakesFile, spits, rot };
 }
