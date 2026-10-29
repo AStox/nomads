@@ -9,8 +9,9 @@
 //                planet's own: wind-relative cos^2 directions, heights from the fetch (see the climate block). The CEM's A and U then come out of the coast's orientation.
 //   shadow       a shore cell is in shadow when the shore itself lies between it and the waves (ShadowSweep / FindIfInShadow marches a ray back along the wave direction at 0.2 cell steps
 //                and stops on a full cell). Here the same test as a depth buffer over the chain's sub-cell points (1 cell wide ray strips, 1.5 cells of slack), O(chain) not O(chain x ray).
-//   angles       the CEM takes the shore angle of a link from the cells' (x + F) positions and averages the two links round a cell (DetermineAngles). Here a link's orientation is the mean of
-//                the two cells' tangents, and a cell's tangent is the normal of the 5 by 5 smoothed F field [design: the CEM's staircase angle would put the 0/90 degree lattice into the flux].
+//   angles       the CEM takes the shore angle of a link from the cells' (x + F) positions and averages the two links round a cell (DetermineAngles). Here a cell's sub-cell point is its centre
+//                moved along the normal of the 5 by 5 smoothed F field by (F - 0.5) cells (the CEM's x + F), its tangent is the chord of the points 3 visits either side, and a link's orientation is
+//                the mean of its two cells' tangents [design: a chord of sub-cell points does not carry the lattice's 0 and 90 degree steps into the flux; SHORE_CHORD=0 gives the smoothed-F normal].
 //   flux         across the border of two chain cells, Q = K H0^(12/5) T^(1/5) cos^(6/5)(phi) sin(phi), phi the angle between the deep-water wave and the shore normal, K = 0.34 m^(3/5) s^(-6/5),
 //                Q in m3/s of deposited sand, H0 the rms deep-water wave height (Ashton and Murray 2006a, eq. 1 as printed in Ashton, Murray and Littlewood 2007, Coastal Sediments '07,
 //                "The response of spit shapes to wave-angle climates"; maximum at 42 degrees). The CEM codes the refracted CERC form; this is the deep-water form the 2006 paper uses.
@@ -21,9 +22,10 @@
 //   limiter      (FlowInCell, FixFlow) each cell is Right, Left, Convergent or Divergent by the directions of its two borders; a divergent cell gives its two borders at most the sand it holds
 //                (plus the full cell behind it, AdjustShore's "AmountSand"), shared in proportion; a right (left) cell passes on at most what comes in plus what it holds.
 //   update       (AdjustShore) dF = (in - out) / (cell^2 D) with D the active profile depth; (TransportSedimentSweep) swept in a random direction; F over 1: OopsImFull puts the excess
-//                equally into the 4-neighbours with F = 0, else into those with F < 1, else it is lost; F under 0: OopsImEmpty takes the deficit equally from the 4-neighbours that are full,
-//                else from those with F > 0; (FixBeach) loose sand (a partial cell with no full 4-neighbour) is moved to partial neighbours or the nearest full cell. Overwash, rock
-//                weathering, sinks and the SWAN coupling of the CEM are not used.
+//                equally into the 4-neighbours with F = 0, else into those with F < 1, else the cell keeps it and tries again (the CEM drops it; here sand is conserved to rounding); F under 0:
+//                OopsImEmpty takes the deficit equally from the 4-neighbours that are full, else from those with F > 0; (FixBeach) loose sand (here a partial cell with no full cell among its 8
+//                neighbours, the CEM has 4) goes to the nearest full cell within 8 cells [design]. Overwash (CheckOverwash, DoOverwash) is a simplified copy, see its block. Rock weathering,
+//                sinks and the SWAN coupling of the CEM are not used.
 //   rock         a cell is mobile only if every land cell within 3 cells (Chebyshev) is at or under 3 m [design: a beach and dune ridge, the CEM's own LAND_HEIGHT is 1 m and the spit runs of
 //                Ashton et al. 2015 use 1 m], and it is not in a pit or the frozen margin. Immobile cells keep F; no sand crosses a border to or from one (the CEM's rock cells). The
 //                chain still passes through them and they cast shadows.
