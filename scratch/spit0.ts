@@ -1,7 +1,12 @@
-import { at, readWin } from "./places";
-import { tierGrid } from "../src/gpu/globe/grid";
-const T3 = process.env.HOME + "/.cache/nomads-scratch/t5/bakeA2/1-b4c6e7d1b819/t3-height.i32";
-const p = at("spit", tierGrid(3));
-console.log(p);
-const W = 40; const h = readWin(T3, 2048, p.face, p.X - W / 2, p.Y - W / 2, W);
-for (let y = W - 1; y >= 0; y -= 1) console.log(Array.from({ length: W }, (_, x) => { const v = h[y * W + x] / 256; return v <= 0 ? (v < -99 ? "  ##" : v.toFixed(0).padStart(4)) : v.toFixed(0).padStart(4); }).join(""));
+import { readFileSync } from "node:fs";
+const a = new Float32Array(new Uint8Array(readFileSync((process.env.RAW_DIR ?? process.env.HOME + "/.cache/nomads-scratch/t7/raw") + "/" + (process.env.FILE ?? "height.f32"))).buffer);
+const fn = 256, f = Number(process.argv[2] ?? 4), X0 = Number(process.argv[3]), Y0 = Number(process.argv[4]), W = Number(process.argv[5] ?? 24), H = Number(process.argv[6] ?? 24);
+for (let Y = Y0; Y < Y0 + H; Y++) {
+  let s = "";
+  for (let X = X0; X < X0 + W; X++) {
+    const v = a[(f * fn + Y) * fn + X];
+    const t = Math.abs(v) < 100 ? v.toFixed(0) : (v / 1000).toFixed(1) + "k";
+    s += t.padStart(6);
+  }
+  console.log(String(Y).padStart(3), s);
+}

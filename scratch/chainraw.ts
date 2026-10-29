@@ -16,14 +16,27 @@ const rd = <T,>(n: string, C: new (b: ArrayBuffer) => T): T => { const b = readF
 
 await holdGpu();
 const gpu = await theGpu(), radius = PLANET_RADIUS_M;
-const set = makeSetup({ seed: 1, spanMy: CHAIN.spanMy, plates: CHAIN.plates, seaLevel: 0, radius }), ext = extTables(set.grid), g = set.grid, N = FACES * g.fn * g.fn;
+const set = makeSetup({ seed: 1, spanMy: CHAIN.spanMy, plates: CHAIN.plates, seaLevel: 0, radius, ...(process.env.STEP_MY ? { stepMy: Number(process.env.STEP_MY) } : {}) }), ext = extTables(set.grid), g = set.grid, N = FACES * g.fn * g.fn;
 let resume: ChainState | undefined, before = 0, rv0: Float64Array | undefined, ad0: Float64Array | undefined;
 if (existsSync(PART + "meta.json")) {
   const m = JSON.parse(readFileSync(PART + "meta.json", "utf8"));
   resume = { S: rd("S", Int32Array), carryLo: rd("carryLo", Int32Array), carryHi: rd("carryHi", Int32Array), rain: rd("rain", Float32Array), nextRain: m.nextRain, step: m.step, quiet: m.quiet, rounds: m.rounds, ledger: m.ledger };
   before = m.seconds; rv0 = rd("removedV", Float64Array); ad0 = rd("depositedV", Float64Array);
 }
-const res = await runChain(gpu, set, { rain: (h) => annualRain(gpu, h, radius), rainEveryMy: CHAIN.rainEveryMy, substeps: CHAIN.substeps, afterMy: CHAIN.afterMy, resume, budgetS: process.env.WHOLE ? undefined : BUDGET, params: { ...erosionFor(radius), creepSea: CREEP_SEA * Number(process.env.CREEP_SEA_X ?? 1), shelfSlope: process.env.SHELF_SLOPE ? Number(process.env.SHELF_SLOPE) : SHELF_SLOPE }, track: true });
+// Lab switches: SUBSTEPS (erosion substeps per tectonic step; 0 = tectonics only), SNAP (comma list of tectonic steps, or "every:N": write snap-<step>.{height.f32,plate.i32,thick.f32} into the dump dir).
+const snaps = process.env.SNAP ?? "", every = snaps.startsWith("every:") ? Number(snaps.slice(6)) : 0, list = new Set(every ? [] : snaps.split(",").filter(Boolean).map(Number));
+const onStep = snaps ? async (s: number, _er: unknown, tec: { elevate(): void; read(): Promise<Int32Array> }) => {
+  if (!(every ? s % every === 0 : list.has(s))) return;
+  tec.elevate();
+  const Ss = await tec.read(), h = fineHeight(set, ext.tab, Ss), fwx = fieldWords(g), th = new Float32Array(N);
+  for (let f = 0; f < FACES; f++) for (let Y = 0; Y < g.fn; Y++) for (let X = 0; X < g.fn; X++) {
+    const i = cellId(g, f, X, Y), at = wordAt(g, f, X, Y), a = ext.tab.words[slotOf(g, f, X, Y) * TILE_WORDS + inTile(X, Y)];
+    let v = 0; for (let k = 0; k < 5; k++) v += (Ss[(FLD.VB + k) * fwx + at] >>> 0);
+    th[i] = (v * 16) / a;
+  }
+  wr(`snap-${String(s).padStart(3, "0")}.height.f32`, h); wr(`snap-${String(s).padStart(3, "0")}.plate.i32`, unpad(g, Ss, FLD.PL)); wr(`snap-${String(s).padStart(3, "0")}.thick.f32`, th);
+} : undefined;
+const res = await runChain(gpu, set, { rain: (h) => annualRain(gpu, h, radius), rainEveryMy: CHAIN.rainEveryMy, substeps: process.env.SUBSTEPS !== undefined ? Number(process.env.SUBSTEPS) : CHAIN.substeps, onStep, afterMy: CHAIN.afterMy, resume, budgetS: process.env.WHOLE ? undefined : BUDGET, params: { ...erosionFor(radius), creepSea: CREEP_SEA * Number(process.env.CREEP_SEA_X ?? 1), shelfSlope: process.env.SHELF_SLOPE ? Number(process.env.SHELF_SLOPE) : SHELF_SLOPE }, track: true });
 const removedV = res.removedV!, depositedV = res.depositedV!;
 if (rv0) for (let i = 0; i < N; i++) { removedV[i] += rv0[i]; depositedV![i] += ad0![i]; }
 const seconds = before + res.seconds;
