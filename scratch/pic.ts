@@ -6,7 +6,7 @@ import { flat, hill, mk, row, save, type Img } from "./render";
 import { floodLakes } from "../scripts/gates/straight";
 const H = process.env.HOME + "/.cache/", T = H + "nomads-scratch/t4/";
 export const REG: Record<string, [string, number, number, number]> = { spit: ["rA", 4, 24, 20], shelf: ["rA", 4, 24, 20], home: ["rH", 4, 26, 25], ridges: ["rH", 4, 26, 25], river: ["rR", 1, 14, 10], lake: ["rL", 1, 14, 18], K3: ["rK", 1, 6, 6], B: ["rB", 1, 1, 6], E2: ["rE", 0, 28, 22], E2w: ["rW", 0, 0, 22] };
-const n = process.argv[2], W = Number(process.argv[3] ?? 384), cands = (process.argv[4] ?? "").split(",").filter(Boolean), p = at(n), [rname, rface, rtx, rty] = REG[n];
+const n = process.argv[2], W = Number(process.argv[3] ?? 384), cands = (process.argv[4] ?? "").split(",").filter(Boolean), p = process.env.PX ? { ...at(n), X: Number(process.env.PX), Y: Number(process.env.PY) } : at(n), [rname, rface, rtx, rty] = REG[n];
 const rx0 = rtx * 256, ry0 = rty * 256, RS = 1024, m = 64;
 // the ring's reach is held off the region's sides inside a face; a side on the face's edge has no ring to hold off (the cells across it are the neighbour face's, carried the same way)
 const mL = rx0 === 0 ? 0 : m, mR = rx0 + RS === 8192 ? 0 : m, mT = ry0 === 0 ? 0 : m, mB = ry0 + RS === 8192 ? 0 : m;

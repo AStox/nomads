@@ -45,6 +45,8 @@ const SLOPE = 1e-3;     // m per m, the gradient that gives a changed cell its h
 const K = 0.34;         // m^(3/5) s^(-6/5), Ashton and Murray 2006a via Ashton, Murray and Littlewood 2007 eq. 1
 const FRAC = Number(process.env.SHORE_DTFRAC ?? 0.3); // the most a border may move of a cell's volume in one step (CEM: a day of the 0.1..1 day steps it ran)
 const MAXSTEPS = Number(process.env.SHORE_MAXSTEPS ?? 1e12);
+const LOOSE8 = process.env.SHORE_LOOSE !== "4"; // loose sand = a partial cell with no full cell among its 8 neighbours (the CEM: 4 neighbours), taken back to the nearest full cell within 8 cells
+const CHORD = process.env.SHORE_CHORD !== "0";  // a visit's tangent from the chain's sub-cell points (SHORE_CHORD=0: the normal of the smoothed F)
 const SHAPE_MAX = Math.cos(42 * Math.PI / 180) ** 1.2 * Math.sin(42 * Math.PI / 180), COS42 = Math.cos(42 * Math.PI / 180), COS_MIN = Math.cos(89.55 * Math.PI / 180);
 
 // ---------- the state ----------
@@ -167,6 +169,17 @@ function buildChain() {
     const c = vc[i], x = c % S + 0.5, y = ((c / S) | 0) + 0.5, f = Math.min(1, F[c]), wdt = Math.abs(vnx[i]) + Math.abs(vny[i]);
     vpx[i] = x + (f - 0.5) * wdt * vnx[i]; vpy[i] = y + (f - 0.5) * wdt * vny[i]; vmob[i] = mobile[c];
   }
+  if (CHORD) {
+    // tangent of a visit = the chord of the sub-cell points 3 visits either side (fewer in a short loop): follows a one-cell spit, which the F gradient cannot
+    for (let l = 0; l < loopA.length; l++) {
+      const a = loopA[l], m = loopB[l] - a; if (m < 3) continue;
+      const hh = Math.min(3, Math.floor(m / 2));
+      for (let i = 0; i < m; i++) {
+        const j = a + (i + hh) % m, k = a + (i - hh + m) % m, v = a + i, dx = vpx[j] - vpx[k], dy = vpy[j] - vpy[k], len = Math.hypot(dx, dy);
+        if (len > 0.3) { vtx[v] = dx / len; vty[v] = dy / len; vnx[v] = -vty[v]; vny[v] = vtx[v]; }
+      }
+    }
+  }
 }
 
 // ---------- the wave climate ----------
@@ -257,11 +270,12 @@ function fixBeach() {
   for (const c of list) {
     if (!mobile[c] || !(F[c] > 0 && F[c] < 1)) continue;
     const x = c % S, y = (c / S) | 0; let full = false; const part: number[] = [];
-    for (let s = 0; s < 4; s++) { const X = x + NX[s], Y = y + NY[s]; if (X < 0 || Y < 0 || X >= S || Y >= S) continue; const k = Y * S + X; if (F[k] >= 1) full = true; else if (F[k] > 0 && mobile[k]) part.push(k); }
+    if (LOOSE8) { for (let j = -1; j <= 1 && !full; j++) for (let i = -1; i <= 1; i++) { const X = x + i, Y = y + j; if ((i || j) && X >= 0 && Y >= 0 && X < S && Y < S && F[Y * S + X] >= 1) { full = true; break; } } }
+    else for (let s = 0; s < 4; s++) { const X = x + NX[s], Y = y + NY[s]; if (X < 0 || Y < 0 || X >= S || Y >= S) continue; const k = Y * S + X; if (F[k] >= 1) full = true; else if (F[k] > 0 && mobile[k]) part.push(k); }
     if (full) continue;
     if (part.length) { for (const k of part) { F[k] += F[c] / part.length; mark(k); } F[c] = 0; mark(c); continue; }
-    let best = -1, bd = 1e9;
-    for (let j = -4; j <= 4; j++) for (let i = -4; i <= 4; i++) { const X = x + i, Y = y + j; if (X < 0 || Y < 0 || X >= S || Y >= S) continue; const k = Y * S + X; if (mobile[k] && F[k] >= 1 && i * i + j * j < bd) { bd = i * i + j * j; best = k; } }
+    const R = LOOSE8 ? 8 : 4; let best = -1, bd = 1e9;
+    for (let j = -R; j <= R; j++) for (let i = -R; i <= R; i++) { const X = x + i, Y = y + j; if (X < 0 || Y < 0 || X >= S || Y >= S) continue; const k = Y * S + X; if (mobile[k] && F[k] >= 1 && i * i + j * j < bd) { bd = i * i + j * j; best = k; } }
     if (best >= 0) { F[best] += F[c]; mark(best); F[c] = 0; mark(c); }
   }
 }
@@ -402,8 +416,8 @@ while (pending.length && step < MAXSTEPS) {
   if (step >= nextLog) { nextLog += 20000; console.log(`  step ${step} year ${(tsim / 365.25 / 86400).toFixed(0)} chain ${nv} loops ${loopA.length} ${((performance.now() - t0) / 1000).toFixed(0)} s`); }
   while (pending.length && tsim >= pending[0] * 365.25 * 86400) {
     const yr = pending.shift()!; let m = 0; for (let c = 0; c < N; c++) if (mobile[c]) m += F[c];
-    const o = out(yr); (stats.runs as unknown[]).push({ years: yr, steps: step, ...o, massChangeCells: m - mass0, lostCells: lost, seconds: (performance.now() - t0) / 1000, chainVisits: nv });
+    const o = out(yr); (stats.runs as unknown[]).push({ years: yr, steps: step, ...o, massChangeCells: m - mass0, lostCells: lost, seconds: (performance.now() - t0) / 1000, chainVisits: nv, chainLoops: loopA.length });
     writeFileSync(`${dstPrefix}${yr}/${name}.shore.json`, JSON.stringify(stats, null, 1));
-    console.log(`${name}: wrote year ${yr} after ${step} steps, ${o.flipped} cells flipped (${o.toLand} to land, ${o.toSea} to sea), mass change ${(m - mass0).toFixed(2)} cells, lost ${lost.toFixed(2)}`);
+    console.log(`${name}: wrote year ${yr} after ${step} steps, ${o.flipped} cells flipped (${o.toLand} to land, ${o.toSea} to sea), mass change ${(m - mass0).toFixed(2)} cells, chain ${nv} visits in ${loopA.length} loops`);
   }
 }
